@@ -244,11 +244,22 @@ unrelated to the real cause.
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `monitoring` | yes | `Collector`, `TagClient`, subscriptions, and polling. |
+| `monitoring` | yes | `Collector`, subscriptions, and polling. |
+| `write` | yes | `TagClient`, `Collector::client`, `PlcSession::write` and `OpcUaSession::inner`: everything that can change a PLC. |
 | `json-cache` | yes | Enables [`JsonFileTagRepository`] and the `serde_json` dependency. |
 | `jsonl-sink` | no | `sinks::JsonlSink` and `Collector::jsonl`. |
 | `ctrl-c` | no | `Collector::handle_ctrl_c`. |
 | `full` | no | All of the above. |
+
+A program that must only read a PLC builds without `write`, so no helper that writes or calls
+a method is compiled in:
+
+```toml
+opcua-tag-browser = { version = "0.2", default-features = false, features = ["monitoring"] }
+```
+
+`connect` still returns the raw `opcua` session, which can do anything; a read-only program
+must not call `write` or `call` on it (check that with a grep in its CI).
 
 Disable default features if you supply your own [`TagRepository`]:
 

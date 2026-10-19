@@ -1,4 +1,98 @@
-## [0.2.4] - 2026-07-31
+## [Unreleased]
+
+### Added
+
+- `write` feature, on by default. It holds everything in this crate that can change a PLC:
+  `TagClient`, `Collector::client`, `PlcSession::write` and `OpcUaSession::inner`. A read-only
+  program (such as an edge data agent) builds with `default-features = false` and gets none of
+  them. Nothing changes for builds with default features.
+
+## [0.2.12] - 2026-07-31
+
+### Fixed
+
+- Preserved subscription `last_seen` change detection state on `Collector` across
+  session reconnects. Previously, when a PLC connection dropped and re-established
+  (e.g., when monitoring multiple PLCs with one endpoint retrying), the OPC UA
+  server sent an initial batch notification for all subscribed items upon
+  re-subscribing. Because `Subscriber` created a fresh empty map on every attempt,
+  all subscribed tags were re-logged/re-printed on every reconnect even if their
+  values had not changed. `Collector` now owns the map for its entire lifetime.
+
+## [0.2.11] - 2026-07-31
+
+### Fixed
+
+- Added client-side deduplication to subscription `DataChangeCallback`. OPC UA
+  servers often fire duplicate notifications when timestamps update or server
+  keepalive ticks fire even when the tag's value and quality remain unchanged.
+  Subscribed tags are now deduplicated on the client side so events are only
+  sent to `TagSink` when the value or status code actually changes.
+
+## [0.2.10] - 2026-07-31
+
+### Fixed
+
+- Preserved the poller's `last_seen` change detection cache across polling
+  session reconnects. Previously, every time the poller re-established its session
+  (e.g., after brief network glitches or transient batch read errors), the
+  cache was wiped, causing all polled tags to be reported again as new values
+  even when their values had not changed on the PLC.
+
+## [0.2.9] - 2026-07-31
+
+### Fixed
+
+- `OpcUaSession::is_connected` was not wrapped in `catch_panic` unlike all other
+  `PlcSession` methods. The `opcua` 0.12 crate can panic inside `is_connected`
+  when the session is mid-reconnect and its internal message queue has not been
+  re-initialised yet — the same root cause as the 0.2.7 entry. The watchdog
+  calls `is_connected` on every health-check tick, so it was the most common
+  trigger of "MessageQueue::send_message called before make_request_channel"
+  panics during reconnection. The call is now guarded; a panic is treated as
+  "not connected" so the watchdog correctly reports the link as down without
+  crashing its own thread or the session thread.
+
+## [0.2.8] - 2026-07-31
+
+### Changed
+
+- The session-thread abandonment wait on stop was reduced from 2 s to 300 ms.
+  Since `disconnect()` cannot be safely called from outside the session thread
+  (see 0.2.7), that 2-second window was not doing anything useful. The thread
+  is still killed when the process exits after the collector threads return.
+  Application code should pair `CollectorHandle::stop` with a force-exit timer
+  (e.g. 3–4 s) so that a blocked TCP `connect` on an unreachable host does not
+  make the process wait for the full OS timeout (~16 s on Windows).
+
+## [0.2.7] - 2026-07-31
+
+### Fixed
+
+- Calling `disconnect()` on the `opcua` session from outside the session thread
+  caused a panic — "MessageQueue::send_message should never be called before
+  make_request_channel" — when the session was mid-reconnect and its internal
+  message queue had not yet been re-initialised. The `disconnect()` call has
+  been removed from the stop path entirely. `run_attempt` now simply waits up
+  to 2 seconds for the session thread to finish on its own, then abandons it.
+  The abandoned thread is killed when the process exits after all collector
+  threads return.
+
+## [0.2.6] - 2026-07-31
+
+### Fixed
+
+- `CollectorHandle::stop` (and so Ctrl+C) could hang indefinitely when called
+  while `Session::run` was executing inside `run_attempt`. The previous fix used
+  `raw.write().disconnect()` to signal the session thread to exit, but
+  `Session::run` holds the write lock on `raw` for the duration of its loop —
+  causing a deadlock where the collector thread waited forever for a lock that
+  the session thread would never release. The write is now attempted with
+  `try_write()` spinning for up to 500 ms; if the lock cannot be acquired the
+  collector thread falls through to the existing 2-second thread-exit wait and
+  abandons the session thread if it still has not exited, after which
+  `run_attempt` returns and the process exits normally.
+
 
 ### Fixed
 

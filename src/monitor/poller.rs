@@ -17,10 +17,10 @@ use std::time::SystemTime;
 const MIN_BATCH_SIZE: usize = 10;
 
 /// What was last seen for a tag, for change detection.
-struct LastSeen {
-    rendered: String,
-    quality: String,
-    numeric: Option<f64>,
+pub(crate) struct LastSeen {
+    pub(crate) rendered: String,
+    pub(crate) quality: String,
+    pub(crate) numeric: Option<f64>,
 }
 
 /// Reads tags in batches and reports those whose value or quality changed.
@@ -47,7 +47,12 @@ impl Poller {
     }
 
     /// Polls until `stop` is set or the connection drops.
-    pub(crate) fn poll_forever(&self, tags: &[PlcTag], stop: &Arc<AtomicBool>) {
+    pub(crate) fn poll_forever(
+        &self,
+        tags: &[PlcTag],
+        stop: &Arc<AtomicBool>,
+        last: &mut HashMap<String, LastSeen>,
+    ) {
         // Parse node IDs once, not on every pass.
         let readable: Vec<(&PlcTag, ReadValueId)> = tags
             .iter()
@@ -73,8 +78,6 @@ impl Poller {
         // forcing a fresh device read for every tag on every pass.
         let max_age = self.options.poll_interval.as_millis() as f64;
 
-        let mut last: HashMap<String, LastSeen> = HashMap::new();
-
         while !stop.load(Ordering::Relaxed) {
             let mut start = 0;
 
@@ -88,7 +91,7 @@ impl Poller {
                     .read(&requests, TimestampsToReturn::Both, max_age)
                 {
                     Ok(values) => {
-                        self.report_changes(batch, &values, &mut last);
+                        self.report_changes(batch, &values, last);
                         start = end;
                     }
                     Err(status) => {
