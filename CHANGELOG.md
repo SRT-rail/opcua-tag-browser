@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### Added
+
+- `write` feature, on by default. It holds everything in this crate that can change a PLC:
+  `TagClient`, `Collector::client`, `PlcSession::write` and `OpcUaSession::inner`. A read-only
+  program (such as an edge data agent) builds with `default-features = false` and gets none of
+  them. Nothing changes for builds with default features.
+
 ## [0.2.12] - 2026-07-31
 
 ### Fixed

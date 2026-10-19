@@ -122,7 +122,8 @@
 //!
 //! | Feature | Default | Effect |
 //! | --- | --- | --- |
-//! | `monitoring` | yes | [`Collector`], [`TagClient`], subscriptions, polling |
+//! | `monitoring` | yes | [`Collector`], subscriptions, polling |
+//! | `write` | yes | [`TagClient`], `Collector::client`, `PlcSession::write`, `OpcUaSession::inner`: everything that can change a PLC |
 //! | `json-cache` | yes | [`JsonFileTagRepository`] and tag caching |
 //! | `jsonl-sink` | no | [`sinks::JsonlSink`] and [`Collector::jsonl`] |
 //! | `ctrl-c` | no | [`Collector::handle_ctrl_c`] |
@@ -172,7 +173,7 @@ mod monitor;
 mod sink;
 #[cfg(feature = "monitoring")]
 pub mod sinks;
-#[cfg(feature = "monitoring")]
+#[cfg(all(feature = "monitoring", feature = "write"))]
 mod writer;
 
 pub use browser::{BrowsedNode, NodeBrowser, OpcUaNodeBrowser};
@@ -196,7 +197,7 @@ pub use collector::{Collector, CollectorHandle};
 pub use monitor::MonitorOptions;
 #[cfg(feature = "monitoring")]
 pub use sink::{ConnectionChange, Source, TagChange, TagSink};
-#[cfg(feature = "monitoring")]
+#[cfg(all(feature = "monitoring", feature = "write"))]
 pub use writer::TagClient;
 
 /// Scans an endpoint and returns its tags.

@@ -36,6 +36,7 @@ pub trait PlcSession: Send + Sync {
     ///
     /// The returned status codes correspond one to one with `nodes_to_write`;
     /// an overall `Ok` does not mean every individual write succeeded.
+    #[cfg(feature = "write")]
     fn write(&self, nodes_to_write: &[WriteValue]) -> Result<Vec<StatusCode>, StatusCode>;
 
     /// Closes the session and deletes its subscriptions server-side.
@@ -66,7 +67,9 @@ impl OpcUaSession {
     /// Returns the wrapped session.
     ///
     /// Use this for operations outside this crate's scope, such as calling
-    /// server methods or reading history.
+    /// server methods or reading history. The raw session can also write and
+    /// call methods, so it is part of the `write` feature.
+    #[cfg(feature = "write")]
     pub fn inner(&self) -> &Arc<RwLock<Session>> {
         &self.session
     }
@@ -105,6 +108,7 @@ impl PlcSession for OpcUaSession {
         })
     }
 
+    #[cfg(feature = "write")]
     fn write(&self, nodes_to_write: &[WriteValue]) -> Result<Vec<StatusCode>, StatusCode> {
         catch_panic(|| self.session.read().write(nodes_to_write))
     }

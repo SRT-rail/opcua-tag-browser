@@ -26,12 +26,15 @@ ctrlc = { version = "3", optional = true }
 env_logger = "0.11"
 
 [features]
-default = ["json-cache", "monitoring"]
+default = ["json-cache", "monitoring", "write"]
 json-cache = ["dep:serde_json"]
 monitoring = []
+# Everything that can change a PLC: TagClient, Collector::client, PlcSession::write and
+# OpcUaSession::inner. A read-only program builds with default-features = false.
+write = []
 jsonl-sink = ["monitoring", "json-cache", "dep:chrono"]
 ctrl-c = ["dep:ctrlc"]
-full = ["monitoring", "json-cache", "jsonl-sink", "ctrl-c"]
+full = ["monitoring", "json-cache", "jsonl-sink", "ctrl-c", "write"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -42,4 +45,4 @@ required-features = ["full"]
 
 [[example]]
 name = "write"
-required-features = ["monitoring"]
+required-features = ["monitoring", "write"]

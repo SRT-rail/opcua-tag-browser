@@ -11,6 +11,7 @@ use crate::session::{OpcUaSession, PlcSession};
 use crate::sink::TagSink;
 use crate::tag::PlcTag;
 use crate::tagset::{glob_match, TagSet};
+#[cfg(feature = "write")]
 use crate::writer::TagClient;
 use opcua::client::prelude::{NodeId, Session};
 use std::panic::{self, AssertUnwindSafe};
@@ -306,6 +307,7 @@ impl Collector {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(feature = "write")]
     pub fn client(&self) -> Result<TagClient> {
         let (_, session) = self.open(&format!("{}-client", self.name))?;
         let tags = self.load_or_scan(session.clone())?;
