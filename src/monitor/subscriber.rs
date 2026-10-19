@@ -17,6 +17,7 @@ pub(crate) struct Subscriber {
     options: MonitorOptions,
     collector: String,
     sink: Arc<dyn TagSink>,
+    last_seen: Arc<std::sync::Mutex<HashMap<String, (String, String)>>>,
 }
 
 impl Subscriber {
@@ -25,12 +26,14 @@ impl Subscriber {
         options: MonitorOptions,
         collector: String,
         sink: Arc<dyn TagSink>,
+        last_seen: Arc<std::sync::Mutex<HashMap<String, (String, String)>>>,
     ) -> Self {
         Self {
             raw,
             options,
             collector,
             sink,
+            last_seen,
         }
     }
 
@@ -156,6 +159,7 @@ impl Subscriber {
     ) -> Result<u32, StatusCode> {
         let collector = self.collector.clone();
         let sink = self.sink.clone();
+        let last_seen = self.last_seen.clone();
 
         self.raw.write().create_subscription(
             self.options.publishing_interval.as_millis() as f64,
@@ -185,6 +189,21 @@ impl Subscriber {
                         continue;
                     };
 
+                    let value_str = format_variant(variant);
+                    let quality_str = format_quality(latest.status);
+
+                    {
+                        let mut map = last_seen
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some((prev_val, prev_qual)) = map.get(&node_id) {
+                            if prev_val == &value_str && prev_qual == &quality_str {
+                                continue;
+                            }
+                        }
+                        map.insert(node_id.clone(), (value_str.clone(), quality_str.clone()));
+                    }
+
                     let good = latest.status.map(|s| s.is_good()).unwrap_or(true);
 
                     sink.tag_changed(&TagChange {
@@ -192,8 +211,8 @@ impl Subscriber {
                         collector: &collector,
                         tag,
                         variant,
-                        value: &format_variant(variant),
-                        quality: &format_quality(latest.status),
+                        value: &value_str,
+                        quality: &quality_str,
                         good,
                         source: Source::Subscribe,
                     });

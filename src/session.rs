@@ -114,7 +114,18 @@ impl PlcSession for OpcUaSession {
     }
 
     fn is_connected(&self) -> bool {
-        self.session.read().is_connected()
+        // Wrap in catch_panic for consistency with the other methods: the opcua
+        // crate can panic inside is_connected() when the session is
+        // mid-reconnect and its internal message queue hasn't been
+        // re-initialised yet. Treat any panic as "not connected".
+        catch_panic(|| {
+            if self.session.read().is_connected() {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })
+        .unwrap_or(false)
     }
 }
 

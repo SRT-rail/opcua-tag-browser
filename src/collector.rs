@@ -60,6 +60,7 @@ pub struct Collector {
     deferred_error: Option<Error>,
     stop: Arc<AtomicBool>,
     sessions: Registry,
+    subscribed_last_seen: Arc<Mutex<std::collections::HashMap<String, (String, String)>>>,
 }
 
 impl Collector {
@@ -89,6 +90,7 @@ impl Collector {
             deferred_error: None,
             stop: Arc::new(AtomicBool::new(false)),
             sessions: Arc::new(Mutex::new(Vec::new())),
+            subscribed_last_seen: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -425,6 +427,7 @@ impl Collector {
             self.monitor_options.clone(),
             self.name.clone(),
             sink.clone(),
+            self.subscribed_last_seen.clone(),
         );
         let rejected = subscriber.subscribe_all(to_subscribe);
 
@@ -441,7 +444,6 @@ impl Collector {
         // stuck until its retry budget (`ConnectOptions::session_retry_limit`)
         // is exhausted, which can be tens of seconds against an unreachable
         // PLC. `_attempt_guard` marks `attempt_stop` once this returns.
-        let raw_for_disconnect = raw.clone();
         let session_thread = thread::spawn(move || {
             panic::catch_unwind(AssertUnwindSafe(|| Session::run(raw)))
         });
@@ -451,17 +453,24 @@ impl Collector {
                 break;
             }
             if self.stop.load(Ordering::Relaxed) {
-                log::debug!("[{}] stop requested; disconnecting session thread", self.name);
-                // Calling disconnect() causes Session::run() to exit its internal
-                // retry loop instead of waiting out the full retry budget.
-                raw_for_disconnect.write().disconnect();
-                // Give it a short window to exit cleanly before we abandon it.
+                // Do not call disconnect() here. The opcua 0.12 crate panics with
+                // "send_message called before make_request_channel" if disconnect
+                // is called while the session is mid-reconnect and its internal
+                // message queue has not been re-initialised yet. Since we cannot
+                // reliably know when it is safe to call, we leave the session
+                // thread alone and give it a short window to exit on its own.
+                // If it hasn't finished within 300 ms we abandon it — it will
+                // be killed when the process exits after the collector threads
+                // return. The application layer should pair this with a
+                // force-exit timer so a blocked TCP connect does not make the
+                // process wait for the full OS timeout (16+ s).
+                log::debug!("[{}] stop requested; waiting for session thread", self.name);
                 let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    std::time::Instant::now() + std::time::Duration::from_millis(300);
                 while !session_thread.is_finished() {
                     if std::time::Instant::now() >= deadline {
-                        log::warn!(
-                            "[{}] session thread did not exit within 2 s; abandoning",
+                        log::debug!(
+                            "[{}] session thread still running after 300 ms; abandoning",
                             self.name
                         );
                         break;
@@ -603,6 +612,8 @@ impl Collector {
         );
 
         thread::spawn(move || {
+            let mut last = std::collections::HashMap::new();
+
             while !stop.load(Ordering::Relaxed) {
                 let raw = match connect(&endpoint_url, &connect_options) {
                     Ok(raw) => raw,
@@ -645,7 +656,7 @@ impl Collector {
                 );
 
                 Poller::new(session, monitor_options.clone(), name.clone(), sink.clone())
-                    .poll_forever(&tags, &stop);
+                    .poll_forever(&tags, &stop, &mut last);
 
                 session_stop.store(true, Ordering::Relaxed);
 
