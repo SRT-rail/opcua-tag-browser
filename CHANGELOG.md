@@ -7,6 +7,14 @@
   program (such as an edge data agent) builds with `default-features = false` and gets none of
   them. Nothing changes for builds with default features.
 
+### Fixed
+
+- `OpcUaSession::close_session_and_delete_subscriptions` now also closes the secure channel, so
+  the TCP connection is released at once. Before, CloseSession ended the session but the
+  connection stayed open until the server timed the channel out. Each `Collector` restart (or
+  `CollectorHandle::stop`) left one behind, and a PLC with a small connection limit (S7-1500:
+  about ten) ran out of room for other clients.
+
 ## [0.2.12] - 2026-07-31
 
 ### Fixed
