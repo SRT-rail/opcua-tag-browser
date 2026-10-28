@@ -47,16 +47,11 @@ impl Subscriber {
             .iter()
             .filter_map(|tag| {
                 let node_id = NodeId::from_str(&tag.node_id).ok()?;
-                // Per OPC 10000-3 Table 13, a MinimumSamplingInterval of 0
-                // means "sample continuously" and a negative value means
-                // indeterminate; only a positive value overrides our default.
                 let sampling_interval = tag
                     .min_sampling_interval
                     .filter(|&ms| ms > 0.0)
                     .unwrap_or(default_sampling);
 
-                // queue_size 1 with discard_oldest keeps only the latest
-                // value per tag, which is what a change log wants.
                 let params = MonitoringParameters {
                     sampling_interval,
                     queue_size: 1,
@@ -75,7 +70,6 @@ impl Subscriber {
             })
             .collect();
 
-        // The callback receives node IDs only, so carry full tags across.
         let by_node_id: Arc<HashMap<String, PlcTag>> = Arc::new(
             tags.iter()
                 .map(|t| (t.node_id.clone(), t.clone()))
@@ -115,8 +109,6 @@ impl Subscriber {
                     &batch_requests,
                 ) {
                     Ok(results) => {
-                        // Per-item status matters. Ignoring it is how a server
-                        // silently drops half your tags without any error.
                         for (tag, result) in batch_tags.iter().zip(results.iter()) {
                             if result.status_code.is_bad() {
                                 log::debug!(
@@ -179,8 +171,6 @@ impl Subscriber {
                         continue;
                     };
 
-                    // Struct members are subscribed individually, so the
-                    // container itself carries nothing useful.
                     if matches!(variant, Variant::ExtensionObject(_)) {
                         continue;
                     }

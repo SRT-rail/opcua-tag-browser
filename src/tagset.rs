@@ -160,7 +160,6 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
             resume = t;
             p += 1;
         } else if star != usize::MAX {
-            // Backtrack: let the last `*` swallow one more character.
             p = star + 1;
             resume += 1;
             t = resume;

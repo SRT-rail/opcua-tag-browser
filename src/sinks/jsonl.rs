@@ -41,7 +41,6 @@ impl JsonlSink {
         let (tx, rx) = mpsc::channel::<Line>();
 
         thread::spawn(move || {
-            // One open handle per (collector, date) so files rotate cleanly.
             let mut writers: HashMap<(String, String), BufWriter<File>> = HashMap::new();
 
             for line in rx {

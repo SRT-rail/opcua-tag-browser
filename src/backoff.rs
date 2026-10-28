@@ -85,8 +85,6 @@ mod tests {
         let max = Duration::from_millis(800);
         let mut backoff = Backoff::new(min, max);
 
-        // Jitter is +/-25%, so bound each step against a widened range
-        // rather than asserting exact doubling.
         let bounds = |base: Duration| {
             (
                 Duration::from_secs_f64(base.as_secs_f64() * 0.75),

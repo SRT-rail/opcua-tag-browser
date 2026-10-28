@@ -95,8 +95,6 @@ impl Collector {
         }
     }
 
-    // ---- sinks -----------------------------------------------------------
-
     /// Sets where observed changes are delivered. Required unless
     /// [`jsonl`](Self::jsonl) is used.
     ///
@@ -125,8 +123,6 @@ impl Collector {
         self
     }
 
-    // ---- tag selection ---------------------------------------------------
-
     /// Monitors only the named tags, by browse path or display name.
     ///
     /// Selecting fewer tags than the server's monitored-item ceiling means
@@ -154,8 +150,6 @@ impl Collector {
         self
     }
 
-    // ---- connection ------------------------------------------------------
-
     /// Connects without encryption or authentication, trusting any certificate.
     ///
     /// Shorthand for `connect_options(ConnectOptions::insecure())`. Appropriate
@@ -171,8 +165,6 @@ impl Collector {
         self.connect_options = options;
         self
     }
-
-    // ---- discovery -------------------------------------------------------
 
     /// Caches the scanned tag list in a JSON file.
     #[cfg(feature = "json-cache")]
@@ -254,8 +246,6 @@ impl Collector {
         self.monitor_options = options;
         self
     }
-
-    // ---- lifecycle -------------------------------------------------------
 
     /// Returns a handle for stopping this collector from another thread.
     ///
@@ -346,9 +336,6 @@ impl Collector {
 
             match self.run_attempt(&sink) {
                 Ok(()) => {
-                    // A clean return only happens via CollectorHandle::stop,
-                    // or because there was nothing to monitor — neither is
-                    // worth restarting for.
                     return Ok(());
                 }
                 Err(e) if !e.is_recoverable() => {
@@ -360,9 +347,6 @@ impl Collector {
                         return Ok(());
                     }
 
-                    // An attempt that ran a good while before failing was
-                    // working; do not let a stale, escalated backoff punish
-                    // its next attempt.
                     if attempt_started.elapsed() >= self.monitor_options.restart_backoff_max {
                         backoff.reset();
                     }
@@ -388,10 +372,6 @@ impl Collector {
     /// leaking the previous one's threads.
     fn run_attempt(&self, sink: &Arc<dyn TagSink>) -> Result<()> {
         let attempt_stop = Arc::new(AtomicBool::new(false));
-        // Declared in this order so drop runs `_attempt_guard` (which sets
-        // `attempt_stop`) before `_bridge` (which joins on it) — otherwise an
-        // early `?` return before anything sets `attempt_stop` would make the
-        // bridge thread's join wait forever.
         let _bridge = spawn_stop_bridge(self.stop.clone(), attempt_stop.clone());
         let _attempt_guard = SetTrueOnDrop(attempt_stop.clone());
 
@@ -412,8 +392,6 @@ impl Collector {
             return Ok(());
         }
 
-        // Subscriptions are cheap per update but capped by the server.
-        // Everything above the cap falls through to polling.
         let split_at = self.monitor_options.max_subscribed_items.min(tags.len());
         let (to_subscribe, remainder) = tags.split_at(split_at);
 
@@ -439,13 +417,6 @@ impl Collector {
 
         log::info!("[{}] listening", self.name);
 
-        // `Session::run` blocks until the session ends — but the `opcua`
-        // crate gives us no way to interrupt it while it is actively
-        // retrying a dropped connection. Running it on its own thread lets
-        // us stop waiting the moment `self.stop` is set, instead of being
-        // stuck until its retry budget (`ConnectOptions::session_retry_limit`)
-        // is exhausted, which can be tens of seconds against an unreachable
-        // PLC. `_attempt_guard` marks `attempt_stop` once this returns.
         let session_thread = thread::spawn(move || {
             panic::catch_unwind(AssertUnwindSafe(|| Session::run(raw)))
         });
@@ -455,17 +426,6 @@ impl Collector {
                 break;
             }
             if self.stop.load(Ordering::Relaxed) {
-                // Do not call disconnect() here. The opcua 0.12 crate panics with
-                // "send_message called before make_request_channel" if disconnect
-                // is called while the session is mid-reconnect and its internal
-                // message queue has not been re-initialised yet. Since we cannot
-                // reliably know when it is safe to call, we leave the session
-                // thread alone and give it a short window to exit on its own.
-                // If it hasn't finished within 300 ms we abandon it — it will
-                // be killed when the process exits after the collector threads
-                // return. The application layer should pair this with a
-                // force-exit timer so a blocked TCP connect does not make the
-                // process wait for the full OS timeout (16+ s).
                 log::debug!("[{}] stop requested; waiting for session thread", self.name);
                 let deadline =
                     std::time::Instant::now() + std::time::Duration::from_millis(300);
@@ -490,8 +450,6 @@ impl Collector {
             Err(payload) => Err(Error::InternalPanic(crate::session::panic_message(&payload))),
         }
     }
-
-    // ---- internals -------------------------------------------------------
 
     /// Applies the selector, if one was set.
     fn selected(&self, tags: TagSet) -> Vec<PlcTag> {
@@ -563,8 +521,6 @@ impl Collector {
         let scanner = TreeScanner::new(&browser, self.filter.as_ref(), self.scan_options.clone());
         let report = scanner.scan(NodeId::objects_folder_id())?;
 
-        // A partial scan is normal on a large server, but a silent one is
-        // indistinguishable from a healthy scan. Say so.
         if !report.is_complete() {
             log::warn!(
                 "[{}] {} subtrees were unreadable",
@@ -630,17 +586,11 @@ impl Collector {
                     }
                 };
 
-                // A successful connect means the outage, if any, is over.
                 backoff.reset();
 
                 let session: Arc<dyn PlcSession> = Arc::new(OpcUaSession::new(raw));
-                // Each reconnect replaces this poller's registry entry rather
-                // than accumulating one per attempt — otherwise a long-running
-                // collector that reconnects many times leaves `stop()` closing
-                // (and warning about) every stale session it ever opened.
                 replace_registry_entry(&sessions, &name, session.clone());
 
-                // Scoped to this session so the watchdog dies with it.
                 let session_stop = Arc::new(AtomicBool::new(false));
                 spawn_watchdog(
                     name.clone(),
@@ -662,9 +612,6 @@ impl Collector {
 
                 session_stop.store(true, Ordering::Relaxed);
 
-                // Retry immediately: the drop just happened, so the fastest
-                // path back to live data is trying right away. The backoff
-                // above only kicks in once connect() itself starts failing.
                 if !stop.load(Ordering::Relaxed) {
                     log::warn!("[{name}] connection lost, reconnecting");
                 }
@@ -700,8 +647,6 @@ impl CollectorHandle {
             }
         }
 
-        // Give the disconnect signal time to propagate into the session state
-        // machine before the caller returns and the process potentially exits.
         thread::sleep(std::time::Duration::from_millis(200));
     }
 

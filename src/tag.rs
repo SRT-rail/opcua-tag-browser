@@ -204,7 +204,6 @@ mod tests {
         let mut plain = PlcTag::new("S", "S", "ns=2;s=s", "Variable", "S");
         assert!(!plain.is_property());
 
-        // i=46 is HasProperty (OPC 10000-5).
         plain.reference_type = Some("i=46".to_string());
         assert!(plain.is_property());
     }

@@ -53,7 +53,6 @@ impl Poller {
         stop: &Arc<AtomicBool>,
         last: &mut HashMap<String, LastSeen>,
     ) {
-        // Parse node IDs once, not on every pass.
         let readable: Vec<(&PlcTag, ReadValueId)> = tags
             .iter()
             .filter_map(|tag| {
@@ -74,8 +73,6 @@ impl Poller {
             }
         }
 
-        // Letting the server serve cached values up to one cycle old avoids
-        // forcing a fresh device read for every tag on every pass.
         let max_age = self.options.poll_interval.as_millis() as f64;
 
         while !stop.load(Ordering::Relaxed) {
@@ -101,8 +98,6 @@ impl Poller {
                         }
 
                         if batch_size > MIN_BATCH_SIZE {
-                            // Most read failures at scale are size related.
-                            // Halve and retry the same range before giving up.
                             batch_size = (batch_size / 2).max(MIN_BATCH_SIZE);
                             log::warn!(
                                 "[{}] read of {} failed ({status}), batch size now {batch_size}",
@@ -137,7 +132,6 @@ impl Poller {
                 continue;
             };
 
-            // Members of structured tags are read individually.
             if matches!(variant, Variant::ExtensionObject(_)) {
                 continue;
             }
@@ -183,15 +177,13 @@ impl Poller {
         numeric: Option<f64>,
     ) -> bool {
         let Some(previous) = previous else {
-            return true; // First reading is always reported.
+            return true;
         };
 
-        // A Good to Bad transition matters even at a constant value.
         if previous.quality != quality {
             return true;
         }
 
-        // Analogue signals jitter; suppress movement below the deadband.
         if let (Some(threshold), Some(new), Some(old)) =
             (self.options.deadband, numeric, previous.numeric)
         {

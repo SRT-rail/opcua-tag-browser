@@ -117,11 +117,6 @@ impl PlcSession for OpcUaSession {
 
     fn close_session_and_delete_subscriptions(&self) -> Result<(), StatusCode> {
         let closed = catch_panic(|| self.session.read().close_session_and_delete_subscriptions());
-        // CloseSession leaves the TCP connection open until the server times the
-        // channel out, and servers count it against their connection limit (an
-        // S7-1500 allows about ten). CloseSecureChannel makes the client drop it
-        // now. `Session::disconnect` would too, but it waits without a limit and
-        // can panic mid-reconnect (see the note in `Collector::run_attempt`).
         let _ = catch_panic(|| {
             let session = self.session.read();
             if session.is_connected() {
@@ -134,10 +129,6 @@ impl PlcSession for OpcUaSession {
     }
 
     fn is_connected(&self) -> bool {
-        // Wrap in catch_panic for consistency with the other methods: the opcua
-        // crate can panic inside is_connected() when the session is
-        // mid-reconnect and its internal message queue hasn't been
-        // re-initialised yet. Treat any panic as "not connected".
         catch_panic(|| {
             if self.session.read().is_connected() {
                 Ok(true)

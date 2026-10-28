@@ -62,7 +62,6 @@ fn closing_a_session_releases_its_connection() {
     let (server, endpoint) = start_server(&dir);
     let options = ConnectOptions::insecure().session_retry_limit(0);
 
-    // CloseSession alone: the server keeps the channel, and so the TCP connection.
     let raw = connect(&endpoint, &options).expect("a session");
     raw.read()
         .close_session_and_delete_subscriptions()
@@ -72,7 +71,6 @@ fn closing_a_session_releases_its_connection() {
         "CloseSession alone keeps the connection"
     );
 
-    // The crate's close releases it.
     let raw = connect(&endpoint, &options).expect("a session");
     let session = OpcUaSession::new(raw.clone());
     session
@@ -83,7 +81,6 @@ fn closing_a_session_releases_its_connection() {
         "the connection is released"
     );
 
-    // Closing a session that is already gone is not a panic.
     let _ = session.close_session_and_delete_subscriptions();
 
     server.write().abort();

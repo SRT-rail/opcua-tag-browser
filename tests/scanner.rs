@@ -101,8 +101,6 @@ fn cyclic_references_terminate() {
 
 #[test]
 fn shared_node_is_expanded_under_every_path() {
-    // NodeId 9 is reachable as both /F/H and /B/H. The spec requires each
-    // browse path be treated as a distinct node.
     let root = NodeId::new(2, "root");
     let f = node("f", "F", NodeClass::Object);
     let b = node("b", "B", NodeClass::Object);
@@ -146,9 +144,6 @@ fn depth_limit_is_respected() {
 
 #[test]
 fn path_is_built_from_browse_name_not_display_name() {
-    // A German-locale DisplayName must not leak into the browse path: per
-    // OPC 10000-3 6.2.5 the path is built from BrowseName, which stays
-    // stable across locales.
     let root = NodeId::new(2, "root");
     let speed = BrowsedNode::new(
         NodeId::new(2, "speed"),

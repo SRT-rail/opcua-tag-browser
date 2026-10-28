@@ -73,7 +73,6 @@ impl TagClient {
                 status,
             })?;
 
-        // An overall Ok does not mean the individual write succeeded.
         match statuses.first() {
             Some(status) if status.is_good() => Ok(()),
             Some(status) => Err(Error::Write {
@@ -178,8 +177,6 @@ impl TagClient {
         if let Some(tag) = self.tags.find(path) {
             return Ok(tag.node_id.clone());
         }
-        // Fall back to treating the input as a node ID directly, so callers can
-        // address nodes that were filtered out of the scan.
         if NodeId::from_str(path).is_ok() {
             return Ok(path.to_string());
         }

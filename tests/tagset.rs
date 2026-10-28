@@ -16,7 +16,6 @@ fn finds_by_path_and_by_name() {
     let tags = fixture();
 
     assert_eq!(tags.find("Machine/Axis2/Speed").unwrap().node_id, "ns=2;s=c");
-    // Ambiguous display name resolves to the first occurrence.
     assert_eq!(tags.find("Speed").unwrap().node_id, "ns=2;s=a");
     assert!(tags.find("Nonexistent").is_none());
 }
@@ -45,8 +44,6 @@ fn glob_matches_across_separators() {
 fn children_are_direct_only() {
     let tags = fixture();
 
-    // Axis1 and Axis2 are nested one level deeper, so Machine has no direct
-    // variable children.
     assert_eq!(tags.children_of("Machine").len(), 0);
     assert_eq!(tags.children_of("Machine/Axis1").len(), 2);
 }

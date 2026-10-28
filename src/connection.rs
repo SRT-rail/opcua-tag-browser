@@ -10,7 +10,6 @@ use std::sync::Arc;
 ///
 /// [`Security::None`] leaves traffic in plaintext. The other two sign, and in
 /// the encrypting case also encrypt, using the named policy.
-// `SecurityPolicy` is not `Eq`, so neither is this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum Security {
@@ -297,8 +296,6 @@ impl ConnectOptions {
 /// without encryption, [`Error::ClientBuild`] if the options do not produce a
 /// usable client, and [`Error::Connect`] if the handshake fails.
 pub fn connect(endpoint_url: &str, options: &ConnectOptions) -> Result<Arc<RwLock<Session>>> {
-    // A password on an unencrypted channel is readable by anyone on the wire.
-    // Failing here is louder than leaking it and hoping nobody looked.
     if !matches!(options.credentials, Credentials::Anonymous) && !options.security.is_encrypted() {
         return Err(Error::InsecureCredentials);
     }

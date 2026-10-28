@@ -20,8 +20,5 @@ fn main() -> opcua_tag_browser::Result<()> {
     println!("{} tags available", plc.tags().len());
     println!("{tag} = {}", plc.get(&tag)?);
 
-    // Uncomment to write:
-    // plc.set(&tag, 1500.0)?;
-
     Ok(())
 }

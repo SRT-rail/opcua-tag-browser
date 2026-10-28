@@ -88,9 +88,6 @@ impl NodeBrowser for OpcUaNodeBrowser {
             reference_type_id: ReferenceTypeId::HierarchicalReferences.into(),
             include_subtypes: true,
             node_class_mask: 0,
-            // `All` already covers BrowseName, DisplayName, NodeClass,
-            // TypeDefinition, and ReferenceTypeId — everything this crate reads
-            // off a `ReferenceDescription`.
             result_mask: BrowseResultMask::All as u32,
         };
 

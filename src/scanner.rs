@@ -193,7 +193,6 @@ impl<'a> TreeScanner<'a> {
                 continue;
             }
 
-            // Guard against reference cycles in the address space.
             let key = child.node_id.to_string();
             if ancestors.contains(&key) {
                 log::trace!("cycle at {key}, not descending");
