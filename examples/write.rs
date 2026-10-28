@@ -13,7 +13,9 @@ fn main() -> opcua_tag_browser::Result<()> {
     let endpoint = args
         .next()
         .unwrap_or_else(|| "opc.tcp://localhost:4840".to_string());
-    let tag = args.next().unwrap_or_else(|| "Machine/Axis1/Speed".to_string());
+    let tag = args
+        .next()
+        .unwrap_or_else(|| "Machine/Axis1/Speed".to_string());
 
     let plc = Collector::new("line1", endpoint).insecure().client()?;
 

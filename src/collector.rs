@@ -130,7 +130,9 @@ impl Collector {
     pub fn only(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
         let wanted: Vec<String> = names.into_iter().map(Into::into).collect();
         self.selector = Some(Box::new(move |tag| {
-            wanted.iter().any(|w| w == &tag.path || w == &tag.display_name)
+            wanted
+                .iter()
+                .any(|w| w == &tag.path || w == &tag.display_name)
         }));
         self
     }
@@ -352,11 +354,7 @@ impl Collector {
                     }
 
                     let delay = backoff.next();
-                    log::error!(
-                        "[{}] {e}, restarting in {}ms",
-                        self.name,
-                        delay.as_millis()
-                    );
+                    log::error!("[{}] {e}, restarting in {}ms", self.name, delay.as_millis());
                     sleep_interruptible(delay, &self.stop);
                 }
             }
@@ -417,9 +415,8 @@ impl Collector {
 
         log::info!("[{}] listening", self.name);
 
-        let session_thread = thread::spawn(move || {
-            panic::catch_unwind(AssertUnwindSafe(|| Session::run(raw)))
-        });
+        let session_thread =
+            thread::spawn(move || panic::catch_unwind(AssertUnwindSafe(|| Session::run(raw))));
 
         loop {
             if session_thread.is_finished() {
@@ -427,8 +424,7 @@ impl Collector {
             }
             if self.stop.load(Ordering::Relaxed) {
                 log::debug!("[{}] stop requested; waiting for session thread", self.name);
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(300);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
                 while !session_thread.is_finished() {
                     if std::time::Instant::now() >= deadline {
                         log::debug!(
@@ -446,8 +442,12 @@ impl Collector {
 
         match session_thread.join() {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(payload)) => Err(Error::InternalPanic(crate::session::panic_message(&payload))),
-            Err(payload) => Err(Error::InternalPanic(crate::session::panic_message(&payload))),
+            Ok(Err(payload)) => Err(Error::InternalPanic(crate::session::panic_message(
+                &payload,
+            ))),
+            Err(payload) => Err(Error::InternalPanic(crate::session::panic_message(
+                &payload,
+            ))),
         }
     }
 
@@ -457,8 +457,11 @@ impl Collector {
             None => tags.into_vec(),
             Some(predicate) => {
                 let all = tags.len();
-                let kept: Vec<PlcTag> =
-                    tags.into_vec().into_iter().filter(|t| predicate(t)).collect();
+                let kept: Vec<PlcTag> = tags
+                    .into_vec()
+                    .into_iter()
+                    .filter(|t| predicate(t))
+                    .collect();
                 log::info!("[{}] selected {} of {all} tags", self.name, kept.len());
                 kept
             }

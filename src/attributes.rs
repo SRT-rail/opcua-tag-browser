@@ -81,8 +81,12 @@ pub(crate) fn fill_variable_attributes(session: &dyn PlcSession, tags: &mut [Plc
 /// AccessLevel, MinimumSamplingInterval, Historizing]` order.
 fn apply(tag: &mut PlcTag, results: &[DataValue]) {
     tag.data_type = value_of(&results[0]).map(crate::variant::format_variant);
-    tag.value_rank = value_of(&results[1]).and_then(variant_as_i64).map(|v| v as i32);
-    tag.access_level = value_of(&results[2]).and_then(variant_as_i64).map(|v| v as u8);
+    tag.value_rank = value_of(&results[1])
+        .and_then(variant_as_i64)
+        .map(|v| v as i32);
+    tag.access_level = value_of(&results[2])
+        .and_then(variant_as_i64)
+        .map(|v| v as u8);
     tag.min_sampling_interval = value_of(&results[3]).and_then(variant_as_f64);
     tag.historizing = value_of(&results[4]).and_then(variant_as_bool);
 }

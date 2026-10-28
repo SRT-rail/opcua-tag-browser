@@ -38,8 +38,13 @@ fn node(id: &str, name: &str, class: NodeClass) -> BrowsedNode {
 }
 
 fn property(id: &str, browse_name: &str, display_name: &str, class: NodeClass) -> BrowsedNode {
-    BrowsedNode::new(NodeId::new(2, id.to_string()), display_name, browse_name, class)
-        .with_reference_type(ReferenceTypeId::HasProperty.into())
+    BrowsedNode::new(
+        NodeId::new(2, id.to_string()),
+        display_name,
+        browse_name,
+        class,
+    )
+    .with_reference_type(ReferenceTypeId::HasProperty.into())
 }
 
 #[test]
@@ -166,7 +171,12 @@ fn path_is_built_from_browse_name_not_display_name() {
 fn properties_are_excluded_by_default() {
     let root = NodeId::new(2, "root");
     let speed = node("speed", "Speed", NodeClass::Variable);
-    let units = property("units", "EngineeringUnits", "EngineeringUnits", NodeClass::Variable);
+    let units = property(
+        "units",
+        "EngineeringUnits",
+        "EngineeringUnits",
+        NodeClass::Variable,
+    );
 
     let browser = FakeBrowser::new().with(&root, vec![speed, units]);
 
@@ -182,7 +192,12 @@ fn properties_are_excluded_by_default() {
 fn properties_are_included_when_requested() {
     let root = NodeId::new(2, "root");
     let speed = node("speed", "Speed", NodeClass::Variable);
-    let units = property("units", "EngineeringUnits", "EngineeringUnits", NodeClass::Variable);
+    let units = property(
+        "units",
+        "EngineeringUnits",
+        "EngineeringUnits",
+        NodeClass::Variable,
+    );
 
     let browser = FakeBrowser::new().with(&root, vec![speed, units]);
 

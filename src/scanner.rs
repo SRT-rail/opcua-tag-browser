@@ -201,9 +201,7 @@ impl<'a> TreeScanner<'a> {
 
             ancestors.push(key.clone());
             match self.browser.children_of(&child.node_id) {
-                Ok(grandchildren) => {
-                    self.walk(grandchildren, &path, depth + 1, ancestors, report)
-                }
+                Ok(grandchildren) => self.walk(grandchildren, &path, depth + 1, ancestors, report),
                 Err(e) => {
                     log::warn!("skipping subtree {key}: {e}");
                     report.skipped.push((key, e));

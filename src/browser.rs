@@ -155,10 +155,7 @@ fn has_more(point: &ByteString) -> bool {
 }
 
 /// Converts raw reference descriptions into [`BrowsedNode`] values.
-fn append_references(
-    references: &Option<Vec<ReferenceDescription>>,
-    out: &mut Vec<BrowsedNode>,
-) {
+fn append_references(references: &Option<Vec<ReferenceDescription>>, out: &mut Vec<BrowsedNode>) {
     let Some(references) = references else { return };
     for reference in references {
         let type_definition = reference.type_definition.node_id.clone();

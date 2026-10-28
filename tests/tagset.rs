@@ -4,9 +4,27 @@ use opcua_tag_browser::{PlcTag, TagSet};
 
 fn fixture() -> TagSet {
     TagSet::new(vec![
-        PlcTag::new("Speed", "Speed", "ns=2;s=a", "Variable", "Machine/Axis1/Speed"),
-        PlcTag::new("Position", "Position", "ns=2;s=b", "Variable", "Machine/Axis1/Position"),
-        PlcTag::new("Speed", "Speed", "ns=2;s=c", "Variable", "Machine/Axis2/Speed"),
+        PlcTag::new(
+            "Speed",
+            "Speed",
+            "ns=2;s=a",
+            "Variable",
+            "Machine/Axis1/Speed",
+        ),
+        PlcTag::new(
+            "Position",
+            "Position",
+            "ns=2;s=b",
+            "Variable",
+            "Machine/Axis1/Position",
+        ),
+        PlcTag::new(
+            "Speed",
+            "Speed",
+            "ns=2;s=c",
+            "Variable",
+            "Machine/Axis2/Speed",
+        ),
         PlcTag::new("Temp", "Temp", "ns=2;s=d", "Variable", "Oven/Temp"),
     ])
 }
@@ -15,7 +33,10 @@ fn fixture() -> TagSet {
 fn finds_by_path_and_by_name() {
     let tags = fixture();
 
-    assert_eq!(tags.find("Machine/Axis2/Speed").unwrap().node_id, "ns=2;s=c");
+    assert_eq!(
+        tags.find("Machine/Axis2/Speed").unwrap().node_id,
+        "ns=2;s=c"
+    );
     assert_eq!(tags.find("Speed").unwrap().node_id, "ns=2;s=a");
     assert!(tags.find("Nonexistent").is_none());
 }

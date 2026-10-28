@@ -120,10 +120,15 @@ impl TagClient {
             });
         }
 
-        self.session.write(&requests).map_err(|status| Error::Write {
-            node_id: values.first().map(|(p, _)| p.to_string()).unwrap_or_default(),
-            status,
-        })
+        self.session
+            .write(&requests)
+            .map_err(|status| Error::Write {
+                node_id: values
+                    .first()
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_default(),
+                status,
+            })
     }
 
     /// Reads one value as a display string.
