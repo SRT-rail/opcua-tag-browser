@@ -39,10 +39,12 @@ pub trait PlcSession: Send + Sync {
     #[cfg(feature = "write")]
     fn write(&self, nodes_to_write: &[WriteValue]) -> Result<Vec<StatusCode>, StatusCode>;
 
-    /// Closes the session and deletes its subscriptions server-side.
+    /// Closes the session and deletes its subscriptions server-side, then drops
+    /// the connection.
     ///
     /// Call this on shutdown: without it the server holds monitored items until
-    /// the session times out, which counts against its item budget.
+    /// the session times out, which counts against its item budget. The session
+    /// cannot be used afterwards.
     fn close_session_and_delete_subscriptions(&self) -> Result<(), StatusCode>;
 
     /// Reports whether the transport is currently connected.
@@ -114,7 +116,21 @@ impl PlcSession for OpcUaSession {
     }
 
     fn close_session_and_delete_subscriptions(&self) -> Result<(), StatusCode> {
-        catch_panic(|| self.session.read().close_session_and_delete_subscriptions())
+        let closed = catch_panic(|| self.session.read().close_session_and_delete_subscriptions());
+        // CloseSession leaves the TCP connection open until the server times the
+        // channel out, and servers count it against their connection limit (an
+        // S7-1500 allows about ten). CloseSecureChannel makes the client drop it
+        // now. `Session::disconnect` would too, but it waits without a limit and
+        // can panic mid-reconnect (see the note in `Collector::run_attempt`).
+        let _ = catch_panic(|| {
+            let session = self.session.read();
+            if session.is_connected() {
+                session.close_secure_channel()
+            } else {
+                Ok(())
+            }
+        });
+        closed
     }
 
     fn is_connected(&self) -> bool {
