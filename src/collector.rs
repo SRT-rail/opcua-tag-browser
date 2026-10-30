@@ -629,47 +629,58 @@ impl Collector {
             let mut last = std::collections::HashMap::new();
 
             while !stop.load(Ordering::Relaxed) {
-                let raw = match connect(&endpoint_url, &connect_options) {
-                    Ok(raw) => raw,
-                    Err(e) => {
-                        let delay = backoff.next();
-                        log::error!(
-                            "[{name}] could not open polling session: {e}, retrying in {}ms",
-                            delay.as_millis()
-                        );
-                        sleep_interruptible(delay, &stop);
-                        continue;
+                let round = panic::catch_unwind(AssertUnwindSafe(|| {
+                    let raw = match connect(&endpoint_url, &connect_options) {
+                        Ok(raw) => raw,
+                        Err(e) => {
+                            let delay = backoff.next();
+                            log::error!(
+                                "[{name}] could not open polling session: {e}, retrying in {}ms",
+                                delay.as_millis()
+                            );
+                            sleep_interruptible(delay, &stop);
+                            return;
+                        }
+                    };
+
+                    backoff.reset();
+
+                    let session: Arc<dyn PlcSession> = Arc::new(OpcUaSession::new(raw));
+                    replace_registry_entry(&sessions, &name, session.clone());
+
+                    let session_stop = Arc::new(AtomicBool::new(false));
+                    let _session_scope = SetTrueOnDrop(session_stop.clone());
+                    spawn_watchdog(
+                        name.clone(),
+                        endpoint_url.clone(),
+                        session.clone(),
+                        sink.clone(),
+                        session_stop,
+                        monitor_options.health_check_interval,
+                    );
+
+                    log::info!(
+                        "[{name}] polling {} tags every {}ms",
+                        tags.len(),
+                        monitor_options.poll_interval.as_millis()
+                    );
+
+                    Poller::new(session, monitor_options.clone(), name.clone(), sink.clone())
+                        .poll_forever(&tags, &stop, &mut last);
+
+                    if !stop.load(Ordering::Relaxed) {
+                        log::warn!("[{name}] connection lost, reconnecting");
                     }
-                };
+                }));
 
-                backoff.reset();
-
-                let session: Arc<dyn PlcSession> = Arc::new(OpcUaSession::new(raw));
-                replace_registry_entry(&sessions, &name, session.clone());
-
-                let session_stop = Arc::new(AtomicBool::new(false));
-                spawn_watchdog(
-                    name.clone(),
-                    endpoint_url.clone(),
-                    session.clone(),
-                    sink.clone(),
-                    session_stop.clone(),
-                    monitor_options.health_check_interval,
-                );
-
-                log::info!(
-                    "[{name}] polling {} tags every {}ms",
-                    tags.len(),
-                    monitor_options.poll_interval.as_millis()
-                );
-
-                Poller::new(session, monitor_options.clone(), name.clone(), sink.clone())
-                    .poll_forever(&tags, &stop, &mut last);
-
-                session_stop.store(true, Ordering::Relaxed);
-
-                if !stop.load(Ordering::Relaxed) {
-                    log::warn!("[{name}] connection lost, reconnecting");
+                if let Err(payload) = round {
+                    let delay = backoff.next();
+                    log::error!(
+                        "[{name}] polling stopped on an internal error ({}), starting again in {}ms",
+                        crate::session::panic_message(&payload),
+                        delay.as_millis()
+                    );
+                    sleep_interruptible(delay, &stop);
                 }
             }
         });
