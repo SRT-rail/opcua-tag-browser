@@ -28,6 +28,11 @@
 - `connect` checks first that the server accepts a TCP connection within `reach_timeout`. The
   `opcua` client connects with no time limit, so where the network silently drops the attempt one
   connect blocked for about two minutes and delayed every reconnect behind it.
+- Polled tags whose batch cannot be read even at the smallest batch size are now reported once as
+  `BAD (<status>)` with their last value, instead of keeping their last value as GOOD forever. A
+  batch size shrunk by failures doubles again after 20 good reads.
+- The poller thread starts again after a panic inside the `opcua` client instead of ending for
+  the rest of the run attempt.
 
 ## [0.2.12] - 2026-07-31
 
