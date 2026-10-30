@@ -7,6 +7,7 @@
   program (such as an edge data agent) builds with `default-features = false` and gets none of
   them. Nothing changes for builds with default features.
 - `MonitorOptions::liveness_timeout` (default 5 s), `Error::Silent` and `Error::Stopped`.
+- `ConnectOptions::reach_timeout` (default 3 s).
 
 ### Fixed
 
@@ -24,6 +25,9 @@
   `connection_changed` also reports `connected: true` once a session is listening.
 - A `CollectorHandle::stop` that arrived while the collector was connecting no longer leaves the
   new session open with all its subscriptions on the server.
+- `connect` checks first that the server accepts a TCP connection within `reach_timeout`. The
+  `opcua` client connects with no time limit, so where the network silently drops the attempt one
+  connect blocked for about two minutes and delayed every reconnect behind it.
 
 ## [0.2.12] - 2026-07-31
 

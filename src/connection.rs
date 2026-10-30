@@ -174,6 +174,12 @@ pub struct ConnectOptions {
     ///
     /// Floored at 500ms by the underlying `opcua` crate.
     pub session_retry_interval: std::time::Duration,
+    /// How long [`connect`] waits for the server to accept a TCP connection.
+    ///
+    /// The `opcua` client connects without a time limit: where the network
+    /// silently drops the attempt, one connect can block for about two
+    /// minutes. A plain TCP check with this limit comes first.
+    pub reach_timeout: std::time::Duration,
 }
 
 impl Default for ConnectOptions {
@@ -189,6 +195,7 @@ impl Default for ConnectOptions {
             credentials: Credentials::Anonymous,
             session_retry_limit: 20,
             session_retry_interval: std::time::Duration::from_secs(2),
+            reach_timeout: std::time::Duration::from_secs(3),
         }
     }
 }
@@ -277,6 +284,12 @@ impl ConnectOptions {
         self.session_retry_interval = interval;
         self
     }
+
+    /// Sets how long [`connect`] waits for the server to accept a TCP connection.
+    pub fn reach_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.reach_timeout = timeout;
+        self
+    }
 }
 
 /// Connects to an endpoint using the supplied options.
@@ -298,6 +311,13 @@ impl ConnectOptions {
 pub fn connect(endpoint_url: &str, options: &ConnectOptions) -> Result<Arc<RwLock<Session>>> {
     if !matches!(options.credentials, Credentials::Anonymous) && !options.security.is_encrypted() {
         return Err(Error::InsecureCredentials);
+    }
+
+    if !reachable(endpoint_url, options.reach_timeout) {
+        return Err(Error::Connect {
+            endpoint: endpoint_url.to_string(),
+            status: StatusCode::BadNotConnected,
+        });
     }
 
     let mut client = ClientBuilder::new()
@@ -336,6 +356,32 @@ pub fn connect(endpoint_url: &str, options: &ConnectOptions) -> Result<Arc<RwLoc
 
     log::info!("connected to {}", endpoint_url);
     Ok(session)
+}
+
+/// Whether some address of the endpoint accepts a TCP connection in time.
+///
+/// An endpoint this cannot read is left to the `opcua` client to judge.
+fn reachable(endpoint_url: &str, timeout: std::time::Duration) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+
+    let Some(rest) = endpoint_url.strip_prefix("opc.tcp://") else {
+        return true;
+    };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let with_port = if authority
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        authority.to_string()
+    } else {
+        format!("{authority}:4840")
+    };
+    match with_port.to_socket_addrs() {
+        Ok(addresses) => addresses
+            .into_iter()
+            .any(|address| TcpStream::connect_timeout(&address, timeout).is_ok()),
+        Err(_) => true,
+    }
 }
 
 #[cfg(test)]
@@ -388,5 +434,29 @@ mod tests {
             Security::SignAndEncrypt(SecurityPolicy::Basic256Sha256).policy(),
             SecurityPolicy::Basic256Sha256
         );
+    }
+
+    #[test]
+    fn an_endpoint_that_never_answers_fails_within_the_reach_timeout() {
+        let options =
+            ConnectOptions::insecure().reach_timeout(std::time::Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let refused = connect("opc.tcp://192.0.2.1:4840/", &options);
+        assert!(matches!(refused, Err(Error::Connect { .. })));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_listening_endpoint_is_reachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(reachable(
+            &format!("opc.tcp://127.0.0.1:{port}/"),
+            std::time::Duration::from_secs(1)
+        ));
+        assert!(reachable(
+            "http://not-opc",
+            std::time::Duration::from_secs(1)
+        ));
     }
 }
