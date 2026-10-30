@@ -389,6 +389,10 @@ impl Collector {
             log::warn!("[{}] no tags to monitor", self.name);
             return Ok(());
         }
+        if self.stop.load(Ordering::Relaxed) {
+            self.close_previous(&self.name);
+            return Ok(());
+        }
 
         let split_at = self.monitor_options.max_subscribed_items.min(tags.len());
         let (to_subscribe, remainder) = tags.split_at(split_at);
@@ -412,6 +416,11 @@ impl Collector {
         let mut to_poll = remainder.to_vec();
         to_poll.extend(rejected);
         self.spawn_poller(to_poll, sink.clone(), attempt_stop.clone());
+
+        if self.stop.load(Ordering::Relaxed) {
+            self.close_previous(&self.name);
+            return Ok(());
+        }
 
         log::info!("[{}] listening", self.name);
 
@@ -469,6 +478,9 @@ impl Collector {
     }
 
     /// Opens a session and registers it for shutdown.
+    ///
+    /// A stop that arrives while connecting finds nothing to close yet, so the
+    /// new session is closed here instead of being left on the server.
     fn open(&self, name: &str) -> Result<OpenSession> {
         self.close_previous(name);
 
@@ -476,6 +488,11 @@ impl Collector {
         let session: Arc<dyn PlcSession> = Arc::new(OpcUaSession::new(raw.clone()));
 
         registry_lock(&self.sessions).push((name.to_string(), session.clone()));
+
+        if self.stop.load(Ordering::Relaxed) {
+            self.close_previous(name);
+            return Err(Error::Stopped);
+        }
 
         Ok((raw, session))
     }

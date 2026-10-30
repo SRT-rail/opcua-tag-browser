@@ -108,6 +108,10 @@ pub enum Error {
         /// The path or name that was looked up.
         path: String,
     },
+
+    /// The collector was stopped while a session was being opened.
+    #[error("stopped while connecting")]
+    Stopped,
 }
 
 impl Error {
