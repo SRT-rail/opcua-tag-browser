@@ -112,6 +112,11 @@ pub enum Error {
     /// The collector was stopped while a session was being opened.
     #[error("stopped while connecting")]
     Stopped,
+
+    /// The session stopped delivering, or the server said it is gone, while
+    /// the connection stayed up.
+    #[error("{0}")]
+    Silent(String),
 }
 
 impl Error {
@@ -149,5 +154,6 @@ mod tests {
         .is_recoverable());
         assert!(Error::InternalPanic("boom".to_string()).is_recoverable());
         assert!(Error::MissingSink.is_recoverable());
+        assert!(Error::Silent("no data from the server for 5 s".to_string()).is_recoverable());
     }
 }

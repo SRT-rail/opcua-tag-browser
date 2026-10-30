@@ -6,6 +6,7 @@
   `TagClient`, `Collector::client`, `PlcSession::write` and `OpcUaSession::inner`. A read-only
   program (such as an edge data agent) builds with `default-features = false` and gets none of
   them. Nothing changes for builds with default features.
+- `MonitorOptions::liveness_timeout` (default 5 s), `Error::Silent` and `Error::Stopped`.
 
 ### Fixed
 
@@ -14,6 +15,15 @@
   connection stayed open until the server timed the channel out. Each `Collector` restart (or
   `CollectorHandle::stop`) left one behind, and a PLC with a small connection limit (S7-1500:
   about ten) ran out of room for other clients.
+- A session the server dropped while the TCP connection stayed up (after an outage longer than
+  the session timeout) is now noticed and replaced. Before, `Collector` kept the dead session
+  forever: no data, no error, and `connection_changed` still said connected. The first
+  subscription now also watches the server's clock, so a healthy session delivers even when no
+  tag changes. When nothing arrives for `liveness_timeout`, or the server reports the session
+  closed, the collector reports `connected: false`, closes the session and opens a new one.
+  `connection_changed` also reports `connected: true` once a session is listening.
+- A `CollectorHandle::stop` that arrived while the collector was connecting no longer leaves the
+  new session open with all its subscriptions on the server.
 
 ## [0.2.12] - 2026-07-31
 

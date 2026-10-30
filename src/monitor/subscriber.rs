@@ -1,6 +1,6 @@
 //! Server-push monitoring, chunked to what the server will accept.
 
-use super::MonitorOptions;
+use super::{Liveness, MonitorOptions};
 use crate::sink::{Source, TagChange, TagSink};
 use crate::tag::PlcTag;
 use crate::variant::{format_quality, format_variant};
@@ -11,6 +11,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+const HEARTBEAT_SAMPLING_MS: f64 = 500.0;
+
+/// What [`Subscriber::subscribe_all`] got from the server.
+pub(crate) struct Subscribed {
+    /// Tags the server refused; the caller polls them instead.
+    pub(crate) rejected: Vec<PlcTag>,
+    /// Whether the server reports its clock, so that silence means trouble.
+    pub(crate) heartbeat: bool,
+}
+
 /// Subscribes tags in chunks and forwards every change the server pushes.
 pub(crate) struct Subscriber {
     raw: Arc<RwLock<Session>>,
@@ -18,6 +28,7 @@ pub(crate) struct Subscriber {
     collector: String,
     sink: Arc<dyn TagSink>,
     last_seen: Arc<std::sync::Mutex<HashMap<String, (String, String)>>>,
+    liveness: Arc<Liveness>,
 }
 
 impl Subscriber {
@@ -27,6 +38,7 @@ impl Subscriber {
         collector: String,
         sink: Arc<dyn TagSink>,
         last_seen: Arc<std::sync::Mutex<HashMap<String, (String, String)>>>,
+        liveness: Arc<Liveness>,
     ) -> Self {
         Self {
             raw,
@@ -34,13 +46,15 @@ impl Subscriber {
             collector,
             sink,
             last_seen,
+            liveness,
         }
     }
 
-    /// Subscribes to `tags`, returning those the server refused.
+    /// Subscribes to `tags`, and to the server's clock in the first
+    /// subscription.
     ///
     /// Rejected tags are not an error: the caller polls them instead.
-    pub(crate) fn subscribe_all(&self, tags: &[PlcTag]) -> Vec<PlcTag> {
+    pub(crate) fn subscribe_all(&self, tags: &[PlcTag]) -> Subscribed {
         let default_sampling = self.options.sampling_interval.as_millis() as f64;
 
         let requests: Vec<(&PlcTag, MonitoredItemCreateRequest)> = tags
@@ -77,6 +91,7 @@ impl Subscriber {
         );
 
         let mut rejected = Vec::new();
+        let mut first = None;
 
         for (index, chunk) in requests.chunks(self.options.sub_chunk_size).enumerate() {
             let sub_id = match self.create_subscription(by_node_id.clone()) {
@@ -98,6 +113,7 @@ impl Subscriber {
                 index + 1,
                 chunk.len()
             );
+            first.get_or_insert(sub_id);
 
             for batch in chunk.chunks(self.options.request_batch_size) {
                 let (batch_tags, batch_requests): (Vec<&PlcTag>, Vec<_>) =
@@ -141,7 +157,46 @@ impl Subscriber {
             );
         }
 
-        rejected
+        let heartbeat = first.is_some_and(|sub_id| self.watch_server_clock(sub_id));
+        Subscribed {
+            rejected,
+            heartbeat,
+        }
+    }
+
+    /// Adds the server's current time to a subscription, so that it
+    /// delivers twice a second even when no tag changes.
+    fn watch_server_clock(&self, sub_id: u32) -> bool {
+        let request = MonitoredItemCreateRequest::new(
+            ReadValueId::from(NodeId::new(
+                0,
+                VariableId::Server_ServerStatus_CurrentTime as u32,
+            )),
+            MonitoringMode::Reporting,
+            MonitoringParameters {
+                sampling_interval: HEARTBEAT_SAMPLING_MS,
+                queue_size: 1,
+                discard_oldest: true,
+                ..Default::default()
+            },
+        );
+        let refused = match self.raw.write().create_monitored_items(
+            sub_id,
+            TimestampsToReturn::Neither,
+            &[request],
+        ) {
+            Ok(results) => match results.first() {
+                Some(result) if result.status_code.is_good() => return true,
+                Some(result) => result.status_code,
+                None => StatusCode::BadUnexpectedError,
+            },
+            Err(status) => status,
+        };
+        log::warn!(
+            "[{}] server clock not watched ({refused}): a session that stops delivering is noticed only when the connection drops",
+            self.collector
+        );
+        false
     }
 
     /// Creates one subscription whose callback forwards changes to the sink.
@@ -152,6 +207,7 @@ impl Subscriber {
         let collector = self.collector.clone();
         let sink = self.sink.clone();
         let last_seen = self.last_seen.clone();
+        let liveness = self.liveness.clone();
 
         self.raw.write().create_subscription(
             self.options.publishing_interval.as_millis() as f64,
@@ -161,6 +217,7 @@ impl Subscriber {
             0,
             true,
             DataChangeCallback::new(move |items| {
+                liveness.beat();
                 for item in items {
                     let node_id = item.item_to_monitor().node_id.to_string();
 

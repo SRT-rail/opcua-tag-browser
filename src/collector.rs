@@ -5,19 +5,20 @@ use crate::browser::OpcUaNodeBrowser;
 use crate::connection::{connect, ConnectOptions};
 use crate::error::{Error, Result};
 use crate::filter::{DefaultNodeFilter, NodeFilter};
-use crate::monitor::{spawn_watchdog, MonitorOptions, Poller, Subscriber};
+use crate::monitor::{spawn_watchdog, Liveness, MonitorOptions, Poller, Subscribed, Subscriber};
 use crate::scanner::{ScanOptions, TreeScanner};
 use crate::session::{OpcUaSession, PlcSession};
-use crate::sink::TagSink;
+use crate::sink::{ConnectionChange, TagSink};
 use crate::tag::PlcTag;
 use crate::tagset::{glob_match, TagSet};
 #[cfg(feature = "write")]
 use crate::writer::TagClient;
-use opcua::client::prelude::{NodeId, Session};
+use opcua::client::prelude::{NodeId, Session, SessionClosedCallback};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(feature = "json-cache")]
 use crate::repository::TagRepository;
@@ -404,14 +405,19 @@ impl Collector {
             remainder.len()
         );
 
+        let liveness = Arc::new(Liveness::new());
         let subscriber = Subscriber::new(
             raw.clone(),
             self.monitor_options.clone(),
             self.name.clone(),
             sink.clone(),
             self.subscribed_last_seen.clone(),
+            liveness.clone(),
         );
-        let rejected = subscriber.subscribe_all(to_subscribe);
+        let Subscribed {
+            rejected,
+            heartbeat,
+        } = subscriber.subscribe_all(to_subscribe);
 
         let mut to_poll = remainder.to_vec();
         to_poll.extend(rejected);
@@ -422,10 +428,18 @@ impl Collector {
             return Ok(());
         }
 
+        let closed = liveness.clone();
+        raw.write()
+            .set_session_closed_callback(SessionClosedCallback::new(move |status| {
+                closed.closed_by_server(format!("the server closed the session ({status})"));
+            }));
+
         log::info!("[{}] listening", self.name);
+        self.report_connection(sink, true);
 
         let session_thread =
             thread::spawn(move || panic::catch_unwind(AssertUnwindSafe(|| Session::run(raw))));
+        liveness.beat();
 
         loop {
             if session_thread.is_finished() {
@@ -433,20 +447,18 @@ impl Collector {
             }
             if self.stop.load(Ordering::Relaxed) {
                 log::debug!("[{}] stop requested; waiting for session thread", self.name);
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
-                while !session_thread.is_finished() {
-                    if std::time::Instant::now() >= deadline {
-                        log::debug!(
-                            "[{}] session thread still running after 300 ms; abandoning",
-                            self.name
-                        );
-                        break;
-                    }
-                    thread::sleep(std::time::Duration::from_millis(50));
-                }
+                self.wait_briefly(&session_thread);
                 return Ok(());
             }
-            thread::sleep(std::time::Duration::from_millis(100));
+            if let Some(reason) = liveness.failure(self.monitor_options.liveness_timeout, heartbeat)
+            {
+                log::warn!("[{}] {reason}; opening a new session", self.name);
+                self.report_connection(sink, false);
+                self.close_previous(&self.name);
+                self.wait_briefly(&session_thread);
+                return Err(Error::Silent(reason));
+            }
+            thread::sleep(Duration::from_millis(100));
         }
 
         match session_thread.join() {
@@ -458,6 +470,30 @@ impl Collector {
                 &payload,
             ))),
         }
+    }
+
+    /// Gives the session thread a moment to end after its session was closed.
+    fn wait_briefly<T>(&self, session_thread: &thread::JoinHandle<T>) {
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while !session_thread.is_finished() {
+            if Instant::now() >= deadline {
+                log::debug!(
+                    "[{}] session thread still running after 300 ms; abandoning",
+                    self.name
+                );
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn report_connection(&self, sink: &Arc<dyn TagSink>, connected: bool) {
+        sink.connection_changed(&ConnectionChange {
+            timestamp: SystemTime::now(),
+            collector: &self.name,
+            endpoint_url: &self.endpoint_url,
+            connected,
+        });
     }
 
     /// Applies the selector, if one was set.

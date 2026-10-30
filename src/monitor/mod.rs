@@ -2,12 +2,14 @@
 //!
 //! Available with the `monitoring` feature, on by default.
 
+mod liveness;
 mod poller;
 mod subscriber;
 mod watchdog;
 
+pub(crate) use liveness::Liveness;
 pub(crate) use poller::Poller;
-pub(crate) use subscriber::Subscriber;
+pub(crate) use subscriber::{Subscribed, Subscriber};
 pub(crate) use watchdog::spawn_watchdog;
 
 use std::time::Duration;
@@ -82,6 +84,13 @@ pub struct MonitorOptions {
     pub restart_backoff_min: Duration,
     /// Ceiling on `Collector`'s restart backoff.
     pub restart_backoff_max: Duration,
+    /// How long a session may deliver nothing before it is replaced.
+    ///
+    /// The collector also watches the server's clock, so a healthy session
+    /// delivers twice a second even when no tag changes. A session the
+    /// server dropped while the connection stayed up delivers nothing: after
+    /// this long it is reported disconnected, closed, and opened again.
+    pub liveness_timeout: Duration,
 }
 
 impl Default for MonitorOptions {
@@ -102,6 +111,7 @@ impl Default for MonitorOptions {
             deadband: None,
             restart_backoff_min: Duration::from_secs(1),
             restart_backoff_max: Duration::from_secs(30),
+            liveness_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -164,6 +174,12 @@ impl MonitorOptions {
     /// Sets the ceiling on `Collector`'s restart backoff.
     pub fn restart_backoff_max(mut self, d: Duration) -> Self {
         self.restart_backoff_max = d;
+        self
+    }
+
+    /// Sets how long a session may deliver nothing before it is replaced.
+    pub fn liveness_timeout(mut self, d: Duration) -> Self {
+        self.liveness_timeout = d;
         self
     }
 }
