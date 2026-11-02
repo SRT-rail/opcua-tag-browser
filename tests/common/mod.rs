@@ -10,7 +10,7 @@
 
 use opcua_tag_browser::opcua::server::prelude::{NodeId, Server, ServerBuilder, Variable};
 use opcua_tag_browser::opcua::sync::RwLock;
-use opcua_tag_browser::{ConnectionChange, TagChange, TagSink};
+use opcua_tag_browser::{ConnectionChange, Source, TagChange, TagSink};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,12 +43,10 @@ pub fn start_server(dir: &std::path::Path, port: u16) -> Arc<RwLock<Server>> {
             .add_folder("Lab", "Lab", &NodeId::objects_folder_id())
             .unwrap();
         let _ = address_space.add_variables(
-            vec![Variable::new(
-                &NodeId::new(1, "Speed"),
-                "Speed",
-                "Speed",
-                7i32,
-            )],
+            vec![
+                Variable::new(&NodeId::new(1, "Speed"), "Speed", "Speed", 7i32),
+                Variable::new(&NodeId::new(1, "Mode"), "Mode", "Mode", 3i32),
+            ],
             &folder,
         );
     }
@@ -161,11 +159,15 @@ pub fn pump(
 pub struct Recorder {
     pub connections: Mutex<Vec<bool>>,
     pub values: Mutex<Vec<String>>,
+    pub polled: Mutex<Vec<String>>,
 }
 
 impl TagSink for Recorder {
     fn tag_changed(&self, event: &TagChange<'_>) {
         self.values.lock().unwrap().push(event.value.to_string());
+        if event.source == Source::Poll {
+            self.polled.lock().unwrap().push(event.value.to_string());
+        }
     }
 
     fn connection_changed(&self, event: &ConnectionChange<'_>) {

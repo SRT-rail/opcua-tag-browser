@@ -14,6 +14,9 @@ exclude = ["/.github", "/pki", "*.json", "/logs"]
 
 [dependencies]
 opcua = { version = "0.12", features = ["client"] }
+async_opcua = { package = "async-opcua", version = "0.19", features = ["client"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
 thiserror = "2"

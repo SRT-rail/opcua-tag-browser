@@ -168,6 +168,8 @@ mod backoff;
 #[cfg(feature = "monitoring")]
 mod collector;
 #[cfg(feature = "monitoring")]
+mod live;
+#[cfg(feature = "monitoring")]
 mod monitor;
 #[cfg(feature = "monitoring")]
 mod sink;

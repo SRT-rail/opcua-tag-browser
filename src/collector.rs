@@ -2,31 +2,32 @@
 
 use crate::backoff::{sleep_interruptible, Backoff};
 use crate::browser::OpcUaNodeBrowser;
-use crate::connection::{connect, ConnectOptions};
+use crate::connection::ConnectOptions;
 use crate::error::{Error, Result};
 use crate::filter::{DefaultNodeFilter, NodeFilter};
+use crate::live::LiveSession;
 use crate::monitor::{spawn_watchdog, Liveness, MonitorOptions, Poller, Subscribed, Subscriber};
 use crate::scanner::{ScanOptions, TreeScanner};
-use crate::session::{OpcUaSession, PlcSession};
+use crate::session::PlcSession;
 use crate::sink::{ConnectionChange, TagSink};
 use crate::tag::PlcTag;
 use crate::tagset::{glob_match, TagSet};
 #[cfg(feature = "write")]
 use crate::writer::TagClient;
-use opcua::client::prelude::{NodeId, Session, SessionClosedCallback};
+use opcua::client::prelude::NodeId;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "json-cache")]
 use crate::repository::TagRepository;
 
 type Registry = Arc<Mutex<Vec<(String, Arc<dyn PlcSession>)>>>;
 type Selector = Box<dyn Fn(&PlcTag) -> bool + Send + Sync>;
-/// The raw `opcua` session and this crate's wrapper over it, from one connect.
-type OpenSession = (Arc<opcua::sync::RwLock<Session>>, Arc<dyn PlcSession>);
+/// One session, both as itself and as the [`PlcSession`] scanning and polling use.
+type OpenSession = (Arc<LiveSession>, Arc<dyn PlcSession>);
 
 /// Connects to one PLC, discovers its tags, and streams every change to a sink.
 ///
@@ -374,7 +375,7 @@ impl Collector {
         let _bridge = spawn_stop_bridge(self.stop.clone(), attempt_stop.clone());
         let _attempt_guard = SetTrueOnDrop(attempt_stop.clone());
 
-        let (raw, session) = self.open(&self.name)?;
+        let (live, session) = self.open(&self.name)?;
 
         spawn_watchdog(
             self.name.clone(),
@@ -385,7 +386,7 @@ impl Collector {
             self.monitor_options.health_check_interval,
         );
 
-        let tags = self.selected(self.load_or_scan(session)?);
+        let tags = self.selected(self.load_or_scan(session.clone())?);
         if tags.is_empty() {
             log::warn!("[{}] no tags to monitor", self.name);
             return Ok(());
@@ -407,7 +408,7 @@ impl Collector {
 
         let liveness = Arc::new(Liveness::new());
         let subscriber = Subscriber::new(
-            raw.clone(),
+            live.clone(),
             self.monitor_options.clone(),
             self.name.clone(),
             sink.clone(),
@@ -421,33 +422,23 @@ impl Collector {
 
         let mut to_poll = remainder.to_vec();
         to_poll.extend(rejected);
-        self.spawn_poller(to_poll, sink.clone(), attempt_stop.clone());
+        self.spawn_poller(session, to_poll, sink.clone(), attempt_stop.clone());
 
         if self.stop.load(Ordering::Relaxed) {
             self.close_previous(&self.name);
             return Ok(());
         }
 
-        let closed = liveness.clone();
-        raw.write()
-            .set_session_closed_callback(SessionClosedCallback::new(move |status| {
-                closed.closed_by_server(format!("the server closed the session ({status})"));
-            }));
-
         log::info!("[{}] listening", self.name);
         self.report_connection(sink, true);
-
-        let session_thread =
-            thread::spawn(move || panic::catch_unwind(AssertUnwindSafe(|| Session::run(raw))));
         liveness.beat();
 
         loop {
-            if session_thread.is_finished() {
+            if live.has_ended() {
                 break;
             }
             if self.stop.load(Ordering::Relaxed) {
-                log::debug!("[{}] stop requested; waiting for session thread", self.name);
-                self.wait_briefly(&session_thread);
+                log::debug!("[{}] stop requested", self.name);
                 return Ok(());
             }
             if let Some(reason) = liveness.failure(self.monitor_options.liveness_timeout, heartbeat)
@@ -455,36 +446,12 @@ impl Collector {
                 log::warn!("[{}] {reason}; opening a new session", self.name);
                 self.report_connection(sink, false);
                 self.close_previous(&self.name);
-                self.wait_briefly(&session_thread);
                 return Err(Error::Silent(reason));
             }
             thread::sleep(Duration::from_millis(100));
         }
 
-        match session_thread.join() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(payload)) => Err(Error::InternalPanic(crate::session::panic_message(
-                &payload,
-            ))),
-            Err(payload) => Err(Error::InternalPanic(crate::session::panic_message(
-                &payload,
-            ))),
-        }
-    }
-
-    /// Gives the session thread a moment to end after its session was closed.
-    fn wait_briefly<T>(&self, session_thread: &thread::JoinHandle<T>) {
-        let deadline = Instant::now() + Duration::from_millis(300);
-        while !session_thread.is_finished() {
-            if Instant::now() >= deadline {
-                log::debug!(
-                    "[{}] session thread still running after 300 ms; abandoning",
-                    self.name
-                );
-                return;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        Ok(())
     }
 
     fn report_connection(&self, sink: &Arc<dyn TagSink>, connected: bool) {
@@ -520,8 +487,8 @@ impl Collector {
     fn open(&self, name: &str) -> Result<OpenSession> {
         self.close_previous(name);
 
-        let raw = connect(&self.endpoint_url, &self.connect_options)?;
-        let session: Arc<dyn PlcSession> = Arc::new(OpcUaSession::new(raw.clone()));
+        let live = LiveSession::connect(&self.endpoint_url, &self.connect_options)?;
+        let session: Arc<dyn PlcSession> = live.clone();
 
         registry_lock(&self.sessions).push((name.to_string(), session.clone()));
 
@@ -530,7 +497,7 @@ impl Collector {
             return Err(Error::Stopped);
         }
 
-        Ok((raw, session))
+        Ok((live, session))
     }
 
     /// Closes any session already registered under `name`.
@@ -604,22 +571,30 @@ impl Collector {
         Ok(TagSet::new(tags))
     }
 
-    /// Runs the poller on its own thread and its own session.
+    /// Runs the poller on its own thread, reading through the attempt's
+    /// session.
+    ///
+    /// One session carries both the subscriptions and the reads: servers cap
+    /// their sessions, often at ten, and every client counts against that. The
+    /// poller ends with the session; the next attempt starts a new one.
     ///
     /// `stop` scopes this poller to one [`run_attempt`](Self::run_attempt):
     /// it is set when that attempt ends, not only on collector shutdown, so
     /// a restart does not leave the previous attempt's poller running
     /// alongside the new one.
-    fn spawn_poller(&self, tags: Vec<PlcTag>, sink: Arc<dyn TagSink>, stop: Arc<AtomicBool>) {
+    fn spawn_poller(
+        &self,
+        session: Arc<dyn PlcSession>,
+        tags: Vec<PlcTag>,
+        sink: Arc<dyn TagSink>,
+        stop: Arc<AtomicBool>,
+    ) {
         if tags.is_empty() {
             return;
         }
 
         let name = format!("{}-poll", self.name);
-        let endpoint_url = self.endpoint_url.clone();
-        let connect_options = self.connect_options.clone();
         let monitor_options = self.monitor_options.clone();
-        let sessions = self.sessions.clone();
         let mut backoff = Backoff::new(
             self.monitor_options.reconnect_backoff_min,
             self.monitor_options.reconnect_delay,
@@ -628,59 +603,34 @@ impl Collector {
         thread::spawn(move || {
             let mut last = std::collections::HashMap::new();
 
-            while !stop.load(Ordering::Relaxed) {
+            log::info!(
+                "[{name}] polling {} tags every {}ms",
+                tags.len(),
+                monitor_options.poll_interval.as_millis()
+            );
+
+            while !stop.load(Ordering::Relaxed) && session.is_connected() {
                 let round = panic::catch_unwind(AssertUnwindSafe(|| {
-                    let raw = match connect(&endpoint_url, &connect_options) {
-                        Ok(raw) => raw,
-                        Err(e) => {
-                            let delay = backoff.next();
-                            log::error!(
-                                "[{name}] could not open polling session: {e}, retrying in {}ms",
-                                delay.as_millis()
-                            );
-                            sleep_interruptible(delay, &stop);
-                            return;
-                        }
-                    };
-
-                    backoff.reset();
-
-                    let session: Arc<dyn PlcSession> = Arc::new(OpcUaSession::new(raw));
-                    replace_registry_entry(&sessions, &name, session.clone());
-
-                    let session_stop = Arc::new(AtomicBool::new(false));
-                    let _session_scope = SetTrueOnDrop(session_stop.clone());
-                    spawn_watchdog(
-                        name.clone(),
-                        endpoint_url.clone(),
+                    Poller::new(
                         session.clone(),
+                        monitor_options.clone(),
+                        name.clone(),
                         sink.clone(),
-                        session_stop,
-                        monitor_options.health_check_interval,
-                    );
-
-                    log::info!(
-                        "[{name}] polling {} tags every {}ms",
-                        tags.len(),
-                        monitor_options.poll_interval.as_millis()
-                    );
-
-                    Poller::new(session, monitor_options.clone(), name.clone(), sink.clone())
-                        .poll_forever(&tags, &stop, &mut last);
-
-                    if !stop.load(Ordering::Relaxed) {
-                        log::warn!("[{name}] connection lost, reconnecting");
-                    }
+                    )
+                    .poll_forever(&tags, &stop, &mut last);
                 }));
 
-                if let Err(payload) = round {
-                    let delay = backoff.next();
-                    log::error!(
-                        "[{name}] polling stopped on an internal error ({}), starting again in {}ms",
-                        crate::session::panic_message(&payload),
-                        delay.as_millis()
-                    );
-                    sleep_interruptible(delay, &stop);
+                match round {
+                    Ok(()) => break,
+                    Err(payload) => {
+                        let delay = backoff.next();
+                        log::error!(
+                            "[{name}] polling stopped on an internal error ({}), starting again in {}ms",
+                            crate::session::panic_message(&payload),
+                            delay.as_millis()
+                        );
+                        sleep_interruptible(delay, &stop);
+                    }
                 }
             }
         });
@@ -729,19 +679,6 @@ fn registry_lock(
     registry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Drops any existing registry entries for `name` and inserts `session` in
-/// their place.
-///
-/// The stale entries are not closed here: whatever they were registered for
-/// has already ended (that is why a new one is being registered), so a close
-/// call against them would just repeat the same `BadNotConnected` this
-/// function exists to stop piling up.
-fn replace_registry_entry(registry: &Registry, name: &str, session: Arc<dyn PlcSession>) {
-    let mut sessions = registry_lock(registry);
-    sessions.retain(|(existing, _)| existing != name);
-    sessions.push((name.to_string(), session));
 }
 
 /// Sets an `AtomicBool` to `true` when dropped, regardless of which return

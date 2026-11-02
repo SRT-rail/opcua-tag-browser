@@ -1,11 +1,9 @@
 //! Telling a live session from one that stopped delivering.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Records when the server last delivered data, and whether it said the
-/// session is gone.
+/// Records when the server last delivered data.
 ///
 /// A session can die on the server while the TCP connection stays up: the
 /// server drops it after an outage longer than its timeout and answers every
@@ -14,7 +12,6 @@ use std::time::{Duration, Instant};
 pub(crate) struct Liveness {
     since: Instant,
     last_ms: AtomicU64,
-    closed: Mutex<Option<String>>,
 }
 
 impl Liveness {
@@ -22,7 +19,6 @@ impl Liveness {
         Self {
             since: Instant::now(),
             last_ms: AtomicU64::new(0),
-            closed: Mutex::new(None),
         }
     }
 
@@ -30,14 +26,6 @@ impl Liveness {
     pub(crate) fn beat(&self) {
         self.last_ms
             .store(self.since.elapsed().as_millis() as u64, Ordering::Relaxed);
-    }
-
-    /// The server reported the session or its subscriptions gone.
-    pub(crate) fn closed_by_server(&self, reason: String) {
-        *self
-            .closed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
     }
 
     /// How long since data last arrived.
@@ -53,14 +41,6 @@ impl Liveness {
     /// server agreed to report its clock, so that data arrives even when no
     /// tag changes.
     pub(crate) fn failure(&self, timeout: Duration, watch_silence: bool) -> Option<String> {
-        if let Some(reason) = self
-            .closed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        {
-            return Some(reason);
-        }
         let silent = self.silent_for();
         (watch_silence && silent >= timeout)
             .then(|| format!("no data from the server for {} s", silent.as_secs()))
@@ -90,17 +70,5 @@ mod tests {
 
         assert!(liveness.silent_for() < Duration::from_millis(20));
         assert!(liveness.failure(Duration::from_millis(20), true).is_none());
-    }
-
-    #[test]
-    fn a_session_closed_by_the_server_fails_at_once() {
-        let liveness = Liveness::new();
-        liveness.beat();
-        liveness.closed_by_server("the server closed the session (BadSessionIdInvalid)".into());
-
-        assert_eq!(
-            liveness.failure(Duration::from_secs(60), false).as_deref(),
-            Some("the server closed the session (BadSessionIdInvalid)")
-        );
     }
 }

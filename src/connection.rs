@@ -361,7 +361,7 @@ pub fn connect(endpoint_url: &str, options: &ConnectOptions) -> Result<Arc<RwLoc
 /// Whether some address of the endpoint accepts a TCP connection in time.
 ///
 /// An endpoint this cannot read is left to the `opcua` client to judge.
-fn reachable(endpoint_url: &str, timeout: std::time::Duration) -> bool {
+pub(crate) fn reachable(endpoint_url: &str, timeout: std::time::Duration) -> bool {
     use std::net::{TcpStream, ToSocketAddrs};
 
     let Some(rest) = endpoint_url.strip_prefix("opc.tcp://") else {
