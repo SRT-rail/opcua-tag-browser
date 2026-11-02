@@ -1,3 +1,26 @@
+## [0.3.0] - 2026-11-02
+
+### Changed
+
+- `Collector` polls through the session that holds its subscriptions, so a collector costs the
+  server one session instead of two. Servers cap their sessions (an S7-1500: ten in all), and a
+  client that reconnects to a full server is refused with `BadTooManySessions` until a slot frees.
+- `Collector` now runs on the asynchronous `async-opcua` 0.19 client. The `opcua` 0.12 client keeps
+  a session locked for the whole of each request and its publish loop needs the same lock, so
+  polling on the subscribing session would have stalled subscription data during every read.
+  `async-opcua` sends each request on its own.
+- Values cross from `async-opcua` to the `opcua` 0.12 types through their OPC UA binary encoding,
+  so `TagChange`, `format_variant` and `format_quality` give the same results as before.
+  Structures of a type the client does not know still arrive as raw bytes.
+- `Collector::discover` and `Collector::client` use the same kind of session.
+- `connection_changed` now comes only from the collector's session: the `<name>-poll` session and
+  its reports are gone.
+- Requests time out after 10 s, as with the `opcua` 0.12 client.
+- New dependencies: `async-opcua` 0.19, `tokio` and `futures`. The collector's sessions run on a
+  runtime of their own (two threads), started on first use.
+
+`connect`, `OpcUaSession`, `TagClient::new` and the `opcua` re-export are unchanged.
+
 ## [0.2.13] - 2026-11-01
 
 ### Added
