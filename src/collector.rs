@@ -55,6 +55,7 @@ pub struct Collector {
     filter: Arc<dyn NodeFilter + Send + Sync>,
     selector: Option<Selector>,
     fast: Option<Selector>,
+    poll: Option<Selector>,
     scan_options: ScanOptions,
     connect_options: ConnectOptions,
     monitor_options: MonitorOptions,
@@ -86,6 +87,7 @@ impl Collector {
             filter: Arc::new(DefaultNodeFilter),
             selector: None,
             fast: None,
+            poll: None,
             scan_options: ScanOptions::default(),
             connect_options: ConnectOptions::default(),
             monitor_options: MonitorOptions::default(),
@@ -167,6 +169,16 @@ impl Collector {
     /// these tags is read about ten times a second.
     pub fn fast(mut self, predicate: impl Fn(&PlcTag) -> bool + Send + Sync + 'static) -> Self {
         self.fast = Some(Box::new(predicate));
+        self
+    }
+
+    /// Polls the tags satisfying a predicate and never subscribes to them.
+    ///
+    /// A server monitors a limited number of items for all its clients
+    /// together. Tags that nobody watches closely can be left to polling, so
+    /// the subscriptions keep room for the ones that matter.
+    pub fn poll(mut self, predicate: impl Fn(&PlcTag) -> bool + Send + Sync + 'static) -> Self {
+        self.poll = Some(Box::new(predicate));
         self
     }
 
@@ -416,6 +428,10 @@ impl Collector {
             Some(fast) => tags.into_iter().partition(|tag| fast(tag)),
             None => (Vec::new(), tags),
         };
+        let (slow, tags): (Vec<PlcTag>, Vec<PlcTag>) = match &self.poll {
+            Some(poll) => tags.into_iter().partition(|tag| poll(tag)),
+            None => (Vec::new(), tags),
+        };
 
         let split_at = self.monitor_options.max_subscribed_items.min(tags.len());
         let (to_subscribe, remainder) = tags.split_at(split_at);
@@ -443,6 +459,7 @@ impl Collector {
 
         let mut to_poll = remainder.to_vec();
         to_poll.extend(rejected);
+        to_poll.extend(slow);
         self.spawn_poller(
             session.clone(),
             to_poll,

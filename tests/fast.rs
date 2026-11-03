@@ -61,3 +61,35 @@ fn a_fast_tag_is_read_directly_on_the_same_session() {
     running.join().unwrap().unwrap();
     server.write().abort();
 }
+
+#[test]
+fn a_tag_left_to_polling_is_never_subscribed() {
+    let dir = in_temp_dir("poll-only");
+    let port = free_port();
+    let server = start_server(&dir, port);
+    let _proxy = Proxy::start(port, None);
+
+    let sink = Arc::new(Recorder::default());
+    let collector = Collector::new("lab", format!("opc.tcp://127.0.0.2:{port}/"))
+        .connect_options(ConnectOptions::insecure().session_retry_limit(0))
+        .no_cache()
+        .read_attributes(false)
+        .poll(|tag| tag.path.ends_with("Speed"))
+        .shared_sink(sink.clone() as Arc<dyn TagSink>);
+    let handle = collector.handle();
+    let running = thread::spawn(move || collector.run());
+
+    wait_until(Duration::from_secs(20), "both values", || {
+        let values = sink.values.lock().unwrap();
+        values.contains(&"7".to_string()) && values.contains(&"3".to_string())
+    });
+    assert_eq!(
+        *sink.polled.lock().unwrap(),
+        ["7"],
+        "room for both, but Speed is left to polling"
+    );
+
+    handle.stop();
+    running.join().unwrap().unwrap();
+    server.write().abort();
+}
