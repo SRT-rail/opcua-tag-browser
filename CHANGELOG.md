@@ -1,3 +1,16 @@
+## [0.3.1] - 2026-11-03
+
+### Added
+
+- `Collector::fast` and `MonitorOptions::fast_interval` (default 100 ms). Tags chosen with `fast`
+  are read directly every `fast_interval` instead of being subscribed, for values that have to
+  look live: a server pushes subscription changes no more often than its minimum publishing
+  interval, and an S7-1500 keeps that at one second unless it is changed in TIA Portal. The reads
+  go through the collector's session (no new session) and are reported as `Source::Poll` by a
+  collector named `<name>-fast`.
+- `Collector::poll`. Tags chosen with it are polled and never subscribed, so the server's limited
+  monitored items stay for the tags that matter.
+
 ## [0.3.0] - 2026-11-02
 
 ### Changed
