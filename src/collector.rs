@@ -54,6 +54,7 @@ pub struct Collector {
     cache: Option<Arc<dyn TagRepository + Send + Sync>>,
     filter: Arc<dyn NodeFilter + Send + Sync>,
     selector: Option<Selector>,
+    fast: Option<Selector>,
     scan_options: ScanOptions,
     connect_options: ConnectOptions,
     monitor_options: MonitorOptions,
@@ -84,6 +85,7 @@ impl Collector {
             sink: None,
             filter: Arc::new(DefaultNodeFilter),
             selector: None,
+            fast: None,
             scan_options: ScanOptions::default(),
             connect_options: ConnectOptions::default(),
             monitor_options: MonitorOptions::default(),
@@ -151,6 +153,20 @@ impl Collector {
     /// Monitors only tags satisfying a predicate.
     pub fn select(mut self, predicate: impl Fn(&PlcTag) -> bool + Send + Sync + 'static) -> Self {
         self.selector = Some(Box::new(predicate));
+        self
+    }
+
+    /// Reads the tags satisfying a predicate directly, every
+    /// [`MonitorOptions::fast_interval`], instead of subscribing to them.
+    ///
+    /// A server pushes subscription changes no more often than its own
+    /// minimum publishing interval, often once a second. For a value that has
+    /// to look live, such as an engine speed, read it directly instead. The
+    /// reads go through the collector's session and are reported as
+    /// [`Source::Poll`](crate::Source::Poll). Keep the list short: each of
+    /// these tags is read about ten times a second.
+    pub fn fast(mut self, predicate: impl Fn(&PlcTag) -> bool + Send + Sync + 'static) -> Self {
+        self.fast = Some(Box::new(predicate));
         self
     }
 
@@ -396,6 +412,11 @@ impl Collector {
             return Ok(());
         }
 
+        let (fast, tags): (Vec<PlcTag>, Vec<PlcTag>) = match &self.fast {
+            Some(fast) => tags.into_iter().partition(|tag| fast(tag)),
+            None => (Vec::new(), tags),
+        };
+
         let split_at = self.monitor_options.max_subscribed_items.min(tags.len());
         let (to_subscribe, remainder) = tags.split_at(split_at);
 
@@ -422,7 +443,22 @@ impl Collector {
 
         let mut to_poll = remainder.to_vec();
         to_poll.extend(rejected);
-        self.spawn_poller(session, to_poll, sink.clone(), attempt_stop.clone());
+        self.spawn_poller(
+            session.clone(),
+            to_poll,
+            "poll",
+            self.monitor_options.poll_interval,
+            sink.clone(),
+            attempt_stop.clone(),
+        );
+        self.spawn_poller(
+            session,
+            fast,
+            "fast",
+            self.monitor_options.fast_interval,
+            sink.clone(),
+            attempt_stop.clone(),
+        );
 
         if self.stop.load(Ordering::Relaxed) {
             self.close_previous(&self.name);
@@ -571,8 +607,8 @@ impl Collector {
         Ok(TagSet::new(tags))
     }
 
-    /// Runs the poller on its own thread, reading through the attempt's
-    /// session.
+    /// Runs a poller on its own thread, reading `tags` every `interval`
+    /// through the attempt's session.
     ///
     /// One session carries both the subscriptions and the reads: servers cap
     /// their sessions, often at ten, and every client counts against that. The
@@ -586,6 +622,8 @@ impl Collector {
         &self,
         session: Arc<dyn PlcSession>,
         tags: Vec<PlcTag>,
+        kind: &str,
+        interval: Duration,
         sink: Arc<dyn TagSink>,
         stop: Arc<AtomicBool>,
     ) {
@@ -593,8 +631,9 @@ impl Collector {
             return;
         }
 
-        let name = format!("{}-poll", self.name);
-        let monitor_options = self.monitor_options.clone();
+        let name = format!("{}-{kind}", self.name);
+        let mut monitor_options = self.monitor_options.clone();
+        monitor_options.poll_interval = interval;
         let mut backoff = Backoff::new(
             self.monitor_options.reconnect_backoff_min,
             self.monitor_options.reconnect_delay,

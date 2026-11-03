@@ -50,6 +50,9 @@ pub struct MonitorOptions {
     pub max_keep_alive_count: u32,
     /// Pause between polling passes.
     pub poll_interval: Duration,
+    /// Pause between reads of the tags chosen with
+    /// [`Collector::fast`](crate::Collector::fast).
+    pub fast_interval: Duration,
     /// Nodes per `Read` request, before adaptive reduction.
     pub poll_batch_size: usize,
     /// How often connectivity is sampled.
@@ -104,6 +107,7 @@ impl Default for MonitorOptions {
             lifetime_count: 100,
             max_keep_alive_count: 10,
             poll_interval: Duration::from_millis(1000),
+            fast_interval: Duration::from_millis(100),
             poll_batch_size: 50,
             health_check_interval: Duration::from_secs(1),
             reconnect_delay: Duration::from_secs(10),
@@ -138,6 +142,13 @@ impl MonitorOptions {
     /// Sets the pause between polling passes.
     pub fn poll_interval(mut self, d: Duration) -> Self {
         self.poll_interval = d;
+        self
+    }
+
+    /// Sets the pause between reads of the tags chosen with
+    /// [`Collector::fast`](crate::Collector::fast).
+    pub fn fast_interval(mut self, d: Duration) -> Self {
+        self.fast_interval = d;
         self
     }
 
