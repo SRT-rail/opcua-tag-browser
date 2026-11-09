@@ -140,6 +140,49 @@ impl PlcSession for OpcUaSession {
     }
 }
 
+/// A session lent out by its owner: everything but closing it.
+pub(crate) struct Borrowed(pub(crate) Arc<dyn PlcSession>);
+
+impl PlcSession for Borrowed {
+    fn browse(
+        &self,
+        nodes_to_browse: &[BrowseDescription],
+    ) -> Result<Option<Vec<BrowseResult>>, StatusCode> {
+        self.0.browse(nodes_to_browse)
+    }
+
+    fn browse_next(
+        &self,
+        release_continuation_points: bool,
+        continuation_points: &[ByteString],
+    ) -> Result<Option<Vec<BrowseResult>>, StatusCode> {
+        self.0
+            .browse_next(release_continuation_points, continuation_points)
+    }
+
+    fn read(
+        &self,
+        nodes_to_read: &[ReadValueId],
+        timestamps_to_return: TimestampsToReturn,
+        max_age: f64,
+    ) -> Result<Vec<DataValue>, StatusCode> {
+        self.0.read(nodes_to_read, timestamps_to_return, max_age)
+    }
+
+    #[cfg(feature = "write")]
+    fn write(&self, nodes_to_write: &[WriteValue]) -> Result<Vec<StatusCode>, StatusCode> {
+        self.0.write(nodes_to_write)
+    }
+
+    fn close_session_and_delete_subscriptions(&self) -> Result<(), StatusCode> {
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        self.0.is_connected()
+    }
+}
+
 /// Runs a closure, converting any panic into [`StatusCode::BadUnexpectedError`].
 ///
 /// The `opcua` crate panics on some malformed server responses. In a long-lived

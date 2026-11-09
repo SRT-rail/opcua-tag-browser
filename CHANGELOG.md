@@ -1,3 +1,12 @@
+## [0.3.2] - 2026-11-09
+
+### Added
+
+- `CollectorHandle::session`: the session the collector runs on, lent out for reads and writes
+  that should not open one more session on the server. Closing the lent session does nothing; the
+  collector still closes it on `stop` and replaces it when it reconnects. `None` while the
+  collector connects or reconnects.
+
 ## [0.3.1] - 2026-11-03
 
 ### Added

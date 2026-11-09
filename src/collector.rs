@@ -35,14 +35,13 @@ type OpenSession = (Arc<LiveSession>, Arc<dyn PlcSession>);
 /// reconnects on its own when the link drops.
 ///
 /// ```no_run
-/// use opcua_tag_browser::Collector;
+/// use opcua_tag_browser::{Collector, TagChange};
 ///
 /// # fn main() -> opcua_tag_browser::Result<()> {
 /// Collector::new("line1", "opc.tcp://192.168.201.2:4840")
 ///     .insecure()
 ///     .matching("Machine/Axis*")
-///     .jsonl("logs")
-///     .handle_ctrl_c()
+///     .sink(|e: &TagChange<'_>| println!("{} = {}", e.path(), e.value))
 ///     .run()
 /// # }
 /// ```
@@ -284,6 +283,7 @@ impl Collector {
     /// Take it before [`run`](Self::run), which consumes the collector.
     pub fn handle(&self) -> CollectorHandle {
         CollectorHandle {
+            name: self.name.clone(),
             stop: self.stop.clone(),
             sessions: self.sessions.clone(),
         }
@@ -699,11 +699,27 @@ impl Collector {
 /// handler, or use [`Collector::handle_ctrl_c`].
 #[derive(Clone)]
 pub struct CollectorHandle {
+    name: String,
     stop: Arc<AtomicBool>,
     sessions: Registry,
 }
 
 impl CollectorHandle {
+    /// The session this collector runs on now, for reads and writes that should not open one
+    /// more session on the server.
+    ///
+    /// `None` while the collector connects or reconnects. Closing what this returns does
+    /// nothing: the collector owns the session, closes it on [`stop`](Self::stop) and replaces it
+    /// when it reconnects, so ask again once [`PlcSession::is_connected`] turns false.
+    pub fn session(&self) -> Option<Arc<dyn PlcSession>> {
+        registry_lock(&self.sessions)
+            .iter()
+            .find(|(name, session)| *name == self.name && session.is_connected())
+            .map(|(_, session)| {
+                Arc::new(crate::session::Borrowed(session.clone())) as Arc<dyn PlcSession>
+            })
+    }
+
     /// Signals shutdown and closes every session this collector opened.
     ///
     /// Closing matters: a server does not learn an abandoned session is gone
@@ -772,5 +788,95 @@ impl Drop for StopBridge {
         if let Some(handle) = self.0.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opcua::client::prelude::{
+        BrowseDescription, BrowseResult, ByteString, DataValue, ReadValueId, StatusCode,
+        TimestampsToReturn,
+    };
+
+    struct Fake {
+        connected: AtomicBool,
+        closed: AtomicBool,
+    }
+
+    impl PlcSession for Fake {
+        fn browse(
+            &self,
+            _: &[BrowseDescription],
+        ) -> std::result::Result<Option<Vec<BrowseResult>>, StatusCode> {
+            Ok(None)
+        }
+
+        fn browse_next(
+            &self,
+            _: bool,
+            _: &[ByteString],
+        ) -> std::result::Result<Option<Vec<BrowseResult>>, StatusCode> {
+            Ok(None)
+        }
+
+        fn read(
+            &self,
+            _: &[ReadValueId],
+            _: TimestampsToReturn,
+            _: f64,
+        ) -> std::result::Result<Vec<DataValue>, StatusCode> {
+            Ok(Vec::new())
+        }
+
+        #[cfg(feature = "write")]
+        fn write(
+            &self,
+            nodes: &[opcua::client::prelude::WriteValue],
+        ) -> std::result::Result<Vec<StatusCode>, StatusCode> {
+            Ok(vec![StatusCode::Good; nodes.len()])
+        }
+
+        fn close_session_and_delete_subscriptions(&self) -> std::result::Result<(), StatusCode> {
+            self.closed.store(true, Ordering::Relaxed);
+            self.connected.store(false, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn is_connected(&self) -> bool {
+            self.connected.load(Ordering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn the_running_session_is_lent_but_the_borrower_cannot_close_it() {
+        let collector = Collector::new("line1", "opc.tcp://127.0.0.1:4840");
+        let handle = collector.handle();
+        assert!(handle.session().is_none(), "nothing is open before run");
+
+        let fake = Arc::new(Fake {
+            connected: AtomicBool::new(true),
+            closed: AtomicBool::new(false),
+        });
+        let shared: Arc<dyn PlcSession> = fake.clone();
+        registry_lock(&collector.sessions).push(("line1-client".into(), shared.clone()));
+        assert!(
+            handle.session().is_none(),
+            "only the collector's own session is lent"
+        );
+
+        registry_lock(&collector.sessions).push(("line1".into(), shared));
+        let lent = handle.session().expect("the running session");
+        assert!(lent.is_connected());
+        assert_eq!(lent.close_session_and_delete_subscriptions(), Ok(()));
+        assert!(
+            !fake.closed.load(Ordering::Relaxed),
+            "the borrower cannot close it"
+        );
+        assert!(lent.is_connected());
+
+        fake.connected.store(false, Ordering::Relaxed);
+        assert!(!lent.is_connected());
+        assert!(handle.session().is_none(), "a dropped session is not lent");
     }
 }
