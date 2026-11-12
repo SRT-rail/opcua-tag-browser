@@ -117,6 +117,40 @@ pub enum Error {
     /// the connection stayed up.
     #[error("{0}")]
     Silent(String),
+
+    /// The server offers no endpoint with the security asked for.
+    #[error("{endpoint} offers no endpoint with the security asked for; it offers {offered}")]
+    NoMatchingSecurity {
+        /// Endpoint URL that was attempted.
+        endpoint: String,
+        /// The security modes the server offers, for example `SignAndEncrypt Basic256Sha256`.
+        offered: String,
+    },
+
+    /// The server takes no guest, so a user name and password are needed.
+    #[error("{endpoint} does not accept guests: it needs a user name and password")]
+    UserRequired {
+        /// Endpoint URL that was attempted.
+        endpoint: String,
+    },
+
+    /// The server does not log users in by name and password.
+    #[error("{endpoint} does not accept a user name and password")]
+    UserNotAccepted {
+        /// Endpoint URL that was attempted.
+        endpoint: String,
+    },
+
+    /// The server shows another certificate than the one trusted before.
+    #[error("{endpoint} shows certificate {seen}, not the trusted {trusted}")]
+    ServerCertificateChanged {
+        /// Endpoint URL that was attempted.
+        endpoint: String,
+        /// Thumbprint of the certificate the server shows now.
+        seen: String,
+        /// Thumbprint of the certificate trusted before.
+        trusted: String,
+    },
 }
 
 impl Error {

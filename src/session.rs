@@ -49,6 +49,14 @@ pub trait PlcSession: Send + Sync {
 
     /// Reports whether the transport is currently connected.
     fn is_connected(&self) -> bool;
+
+    /// What this session was opened with: the id the server gave it, the
+    /// security, the server's certificate and the user.
+    ///
+    /// `None` when the session does not know it.
+    fn connection_info(&self) -> Option<crate::connection::ConnectionInfo> {
+        None
+    }
 }
 
 /// A [`PlcSession`] backed by a live `opcua` client session.
@@ -180,6 +188,10 @@ impl PlcSession for Borrowed {
 
     fn is_connected(&self) -> bool {
         self.0.is_connected()
+    }
+
+    fn connection_info(&self) -> Option<crate::connection::ConnectionInfo> {
+        self.0.connection_info()
     }
 }
 

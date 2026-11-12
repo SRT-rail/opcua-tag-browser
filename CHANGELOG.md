@@ -1,3 +1,49 @@
+## [0.3.3] - 2026-11-11
+
+### Added
+
+- `ConnectOptions::session_name`: the session name the server shows in its session diagnostics
+  (TIA Portal lists it for an S7-1500), so each client can be told apart. Both clients send it.
+- `PlcSession::connection_info`: what a session was opened with, for showing next to the
+  server's own diagnostics: the session id the server gave it, the security, the thumbprint of
+  the server's certificate and the user. A collector's lent session (`CollectorHandle::session`)
+  reports it.
+- `Security::Auto` follows the server: its plain endpoint while it offers one, otherwise its
+  strongest one. `Security::Encrypted` takes the strongest signed and encrypted endpoint. Both
+  clients now read the server's endpoints first and pick from them, so the user token policy is
+  always the server's own.
+- `ConnectOptions::server_certificate`: the thumbprint of the only server certificate accepted on
+  a secure endpoint; another one fails with the new `Error::ServerCertificateChanged`.
+- `ConnectOptions::pki_dir`, and `client_certificate` to read this client's certificate and its
+  thumbprint, for importing into a server's trusted clients.
+- Errors that say why no session could be opened: `NoMatchingSecurity` (with what the server
+  offers), `UserRequired`, `UserNotAccepted`. A password is still never sent in the clear: it goes
+  over an encrypted channel or a user token policy that encrypts it.
+
+### Fixed
+
+- A server that refused the session while it was being opened (too many sessions, guest access
+  off, a security policy or certificate change) made the collector panic with "JoinHandle polled
+  after completion": the finished event loop was awaited a second time when the session was
+  closed. The panic was caught and reported as `BadUnexpectedError`, so the server's reason was
+  lost. Now the connection fails with the status the server gave, for example
+  `BadTooManySessions`.
+- Tags picked with `Collector::fast` waited until every subscription was created before their first
+  read, seconds on a server with many tags. They are now read from the moment the tags are known.
+- With both clients on one `pki_dir`, the `opcua` 0.12 client could not read the key the async
+  client had made (bare `\r` line ends, which OpenSSL does not read): it logged "Certificate
+  creation failed ... already exists" and "Cannot read our own certificate and private key", and
+  could not encrypt. The key file now gets `\n` line ends before either client connects; the key
+  itself is unchanged.
+- A client certificate made earlier for another application URI was kept, so an encrypted session
+  sent a URI that did not match its certificate and servers that check it refused
+  (`BadCertificateUriInvalid`). Before connecting, a certificate whose URI does not match
+  `ConnectOptions::application_uri` is now set aside (`*.before-<time>`, kept beside it) and a new
+  one is made.
+- `force_rescan` stayed on for the collector's whole life: every reconnect scanned the address
+  space again, minutes on a big server, and a link that dropped during a scan started it over.
+  It now ends when the fresh tag list is saved; later reconnects load that list.
+
 ## [0.3.2] - 2026-11-09
 
 ### Added

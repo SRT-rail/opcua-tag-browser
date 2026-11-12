@@ -150,6 +150,7 @@
 
 mod browser;
 mod connection;
+mod endpoint;
 mod error;
 mod filter;
 mod scanner;
@@ -179,7 +180,10 @@ pub mod sinks;
 mod writer;
 
 pub use browser::{BrowsedNode, NodeBrowser, OpcUaNodeBrowser};
-pub use connection::{connect, ConnectOptions, Credentials, Security};
+pub use connection::{
+    client_certificate, connect, ClientCertificate, ConnectOptions, ConnectionInfo, Credentials,
+    Security,
+};
 pub use error::{Error, Result};
 pub use filter::{AcceptAll, DefaultNodeFilter, NodeFilter};
 pub use scanner::{ScanOptions, ScanReport, TreeScanner};

@@ -58,7 +58,7 @@ pub struct Collector {
     scan_options: ScanOptions,
     connect_options: ConnectOptions,
     monitor_options: MonitorOptions,
-    force_rescan: bool,
+    force_rescan: AtomicBool,
     read_attributes: bool,
     resilient: bool,
     deferred_error: Option<Error>,
@@ -90,7 +90,7 @@ impl Collector {
             scan_options: ScanOptions::default(),
             connect_options: ConnectOptions::default(),
             monitor_options: MonitorOptions::default(),
-            force_rescan: false,
+            force_rescan: AtomicBool::new(false),
             read_attributes: true,
             resilient: true,
             deferred_error: None,
@@ -222,7 +222,7 @@ impl Collector {
 
     /// Ignores any cached tag list and rescans once.
     pub fn force_rescan(mut self, yes: bool) -> Self {
-        self.force_rescan = yes;
+        self.force_rescan = AtomicBool::new(yes);
         self
     }
 
@@ -419,6 +419,7 @@ impl Collector {
             log::warn!("[{}] no tags to monitor", self.name);
             return Ok(());
         }
+
         if self.stop.load(Ordering::Relaxed) {
             self.close_previous(&self.name);
             return Ok(());
@@ -443,7 +444,17 @@ impl Collector {
             remainder.len()
         );
 
+        self.spawn_poller(
+            session.clone(),
+            fast,
+            "fast",
+            self.monitor_options.fast_interval,
+            sink.clone(),
+            attempt_stop.clone(),
+        );
+
         let liveness = Arc::new(Liveness::new());
+        // the heartbearte type a bit of a lie
         let subscriber = Subscriber::new(
             live.clone(),
             self.monitor_options.clone(),
@@ -461,18 +472,10 @@ impl Collector {
         to_poll.extend(rejected);
         to_poll.extend(slow);
         self.spawn_poller(
-            session.clone(),
+            session,
             to_poll,
             "poll",
             self.monitor_options.poll_interval,
-            sink.clone(),
-            attempt_stop.clone(),
-        );
-        self.spawn_poller(
-            session,
-            fast,
-            "fast",
-            self.monitor_options.fast_interval,
             sink.clone(),
             attempt_stop.clone(),
         );
@@ -580,7 +583,7 @@ impl Collector {
     fn load_or_scan(&self, session: Arc<dyn PlcSession>) -> Result<TagSet> {
         #[cfg(feature = "json-cache")]
         if let Some(cache) = &self.cache {
-            if cache.exists() && !self.force_rescan {
+            if cache.exists() && !self.force_rescan.load(Ordering::Relaxed) {
                 match cache.load() {
                     Ok(tags) => {
                         log::info!("[{}] loaded {} tags from cache", self.name, tags.len());
@@ -619,6 +622,7 @@ impl Collector {
         #[cfg(feature = "json-cache")]
         if let Some(cache) = &self.cache {
             cache.save(&tags)?;
+            self.force_rescan.store(false, Ordering::Relaxed);
         }
 
         Ok(TagSet::new(tags))

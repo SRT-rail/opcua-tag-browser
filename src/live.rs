@@ -8,7 +8,8 @@
 //! Values cross between the two crates' types through their OPC UA binary
 //! encoding, so everything downstream renders exactly as before.
 
-use crate::connection::{reachable, ConnectOptions, Credentials, Security};
+use crate::connection::{reachable, ConnectOptions, ConnectionInfo, Credentials, Security};
+use crate::endpoint::{check_trusted, choose, thumbprint, Offer, Token};
 use crate::error::{Error, Result};
 use crate::session::{catch_panic, PlcSession};
 use async_opcua::client::{
@@ -143,25 +144,26 @@ fn timestamps(value: old::TimestampsToReturn) -> ua::TimestampsToReturn {
     }
 }
 
-fn security_mode(security: Security) -> ua::MessageSecurityMode {
-    match security {
-        Security::None => ua::MessageSecurityMode::None,
-        Security::Sign(_) => ua::MessageSecurityMode::Sign,
-        Security::SignAndEncrypt(_) => ua::MessageSecurityMode::SignAndEncrypt,
-    }
-}
-
-fn token_policy(credentials: &Credentials) -> ua::UserTokenPolicy {
-    match credentials {
-        Credentials::Anonymous => ua::UserTokenPolicy::anonymous(),
-        Credentials::UserName { policy_id, .. } => ua::UserTokenPolicy {
-            policy_id: policy_id.as_str().into(),
-            token_type: ua::UserTokenType::UserName,
-            issued_token_type: ua::UAString::null(),
-            issuer_endpoint_url: ua::UAString::null(),
-            security_policy_uri: ua::UAString::null(),
-        },
-    }
+fn offer(endpoint: &ua::EndpointDescription) -> Offer {
+    let mode = match endpoint.security_mode {
+        ua::MessageSecurityMode::None => old::MessageSecurityMode::None,
+        ua::MessageSecurityMode::Sign => old::MessageSecurityMode::Sign,
+        ua::MessageSecurityMode::SignAndEncrypt => old::MessageSecurityMode::SignAndEncrypt,
+        _ => old::MessageSecurityMode::Invalid,
+    };
+    let tokens = endpoint.user_identity_tokens.as_deref().unwrap_or(&[]);
+    Offer::new(
+        endpoint.security_policy_uri.as_ref(),
+        mode,
+        tokens.iter().map(|token| {
+            let kind = match token.token_type {
+                ua::UserTokenType::Anonymous => Token::Anonymous,
+                ua::UserTokenType::UserName => Token::UserName,
+                _ => Token::Other,
+            };
+            (kind, token.security_policy_uri.as_ref())
+        }),
+    )
 }
 
 fn identity(credentials: &Credentials) -> IdentityToken {
@@ -178,13 +180,17 @@ pub(crate) struct LiveSession {
     session: Arc<Session>,
     connected: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
-    event_loop: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    event_loop: Mutex<Option<tokio::task::JoinHandle<Option<ua::StatusCode>>>>,
+    security: String,
+    server_certificate: Option<String>,
+    user: Option<String>,
 }
 
 impl LiveSession {
     /// Opens a session, failing fast when nothing answers at the endpoint.
     pub(crate) fn connect(endpoint_url: &str, options: &ConnectOptions) -> Result<Arc<Self>> {
         if !matches!(options.credentials, Credentials::Anonymous)
+            && options.security != Security::Auto
             && !options.security.is_encrypted()
         {
             return Err(Error::InsecureCredentials);
@@ -212,38 +218,67 @@ impl LiveSession {
             status,
         };
 
-        let mut client = ClientBuilder::new()
+        let (trust, verify) = options.trusts_server();
+        let mut builder = ClientBuilder::new()
             .application_name(options.application_name.clone())
             .application_uri(options.application_uri.clone())
+            .session_name(options.session_name.clone())
             .create_sample_keypair(options.create_sample_keypair)
-            .trust_server_certs(options.trust_server_certs)
-            .verify_server_certs(options.verify_server_certs)
+            .trust_server_certs(trust)
+            .verify_server_certs(verify)
             .session_timeout(options.session_timeout_ms)
             .session_retry_limit(options.session_retry_limit)
             .session_retry_initial(options.session_retry_interval)
-            .request_timeout(REQUEST_TIMEOUT)
+            .request_timeout(REQUEST_TIMEOUT);
+        if let Some(dir) = &options.pki_dir {
+            builder = builder.pki_dir(dir.clone());
+        }
+        let pki_dir = options
+            .pki_dir
+            .clone()
+            .unwrap_or_else(|| crate::connection::DEFAULT_PKI_DIR.into());
+        crate::connection::own_certificate_for(&pki_dir, &options.application_uri);
+        let mut client = builder
             .client()
             .map_err(|errors| Error::ClientBuild(errors.join(", ")))?;
+        crate::connection::key_readable_by_both_clients(&pki_dir);
+
+        let endpoints = client
+            .get_server_endpoints_from_url(endpoint_url.as_str())
+            .await
+            .map_err(|e| failed(old_status(e.status())))?;
+        let offers: Vec<Offer> = endpoints.iter().map(offer).collect();
+        let index = choose(
+            &endpoint_url,
+            &offers,
+            options.security,
+            &options.credentials,
+        )?;
+        let mut chosen = endpoints[index].clone();
+        let server_certificate = thumbprint(chosen.server_certificate.as_ref());
+        check_trusted(
+            &endpoint_url,
+            options.server_certificate.as_deref(),
+            server_certificate.as_deref(),
+            offers[index].policy != old::SecurityPolicy::None,
+        )?;
+        chosen.endpoint_url = endpoint_url.as_str().into();
+        let security = offers[index].label();
 
         log::debug!(
-            "connecting to {} with {:?} as {:?}",
+            "connecting to {} with {} as {:?}",
             endpoint_url,
-            options.security,
+            security,
             options.credentials
         );
 
-        let endpoint: ua::EndpointDescription = (
-            endpoint_url.as_str(),
-            options.security.policy().to_str(),
-            security_mode(options.security),
-            token_policy(&options.credentials),
-        )
-            .into();
-
         let (session, event_loop) = client
-            .connect_to_matching_endpoint(endpoint, identity(&options.credentials))
-            .await
+            .connect_to_endpoint_directly(chosen, identity(&options.credentials))
             .map_err(|e| failed(old_status(e.status())))?;
+        let user = match &options.credentials {
+            Credentials::UserName { user, .. } => Some(user.clone()),
+            Credentials::Anonymous => None,
+        };
 
         let connected = Arc::new(AtomicBool::new(false));
         let ended = Arc::new(AtomicBool::new(false));
@@ -254,25 +289,33 @@ impl LiveSession {
             endpoint_url.clone(),
         ));
 
-        let up = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let waited = tokio::time::timeout(CONNECT_TIMEOUT, async {
             tokio::select! {
-                up = session.wait_for_connection() => up,
-                _ = &mut running => false,
+                up = session.wait_for_connection() => Ok(up),
+                ended_with = &mut running => Err(ended_with.ok().flatten()),
             }
         })
-        .await
-        .unwrap_or(false);
+        .await;
+        let (up, refused) = match waited {
+            Ok(Ok(up)) => (up, None),
+            Ok(Err(status)) => (false, status),
+            Err(_) => (false, None),
+        };
 
         let live = Arc::new(Self {
             session,
             connected,
             ended,
-            event_loop: Mutex::new(Some(running)),
+            event_loop: Mutex::new(Some(running).filter(|running| !running.is_finished())),
+            security,
+            server_certificate,
+            user,
         });
 
         if !up || live.ended.load(Ordering::Relaxed) {
             live.close().await;
-            return Err(failed(old::StatusCode::BadNotConnected));
+            let status = refused.map_or(old::StatusCode::BadNotConnected, old_status);
+            return Err(failed(status));
         }
 
         live.connected.store(true, Ordering::Relaxed);
@@ -362,7 +405,7 @@ impl LiveSession {
             }
             connected.store(false, Ordering::Relaxed);
 
-            if let Some(mut running) = running {
+            if let Some(mut running) = running.filter(|running| !running.is_finished()) {
                 if tokio::time::timeout(LOOP_END_TIMEOUT, &mut running)
                     .await
                     .is_err()
@@ -381,8 +424,9 @@ async fn drive(
     connected: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
     endpoint_url: String,
-) {
+) -> Option<ua::StatusCode> {
     futures::pin_mut!(events);
+    let mut ended_with = None;
     while let Some(event) = events.next().await {
         match event {
             Ok(SessionPollResult::ConnectionLost(status)) => {
@@ -393,12 +437,14 @@ async fn drive(
             Ok(_) => {}
             Err(status) => {
                 log::debug!("session with {endpoint_url} ended ({status})");
+                ended_with = Some(status);
                 break;
             }
         }
     }
     connected.store(false, Ordering::Relaxed);
     ended.store(true, Ordering::Relaxed);
+    ended_with
 }
 
 impl PlcSession for LiveSession {
@@ -460,6 +506,16 @@ impl PlcSession for LiveSession {
 
     fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed) && !self.has_ended()
+    }
+
+    fn connection_info(&self) -> Option<ConnectionInfo> {
+        let id = self.session.server_session_id();
+        Some(ConnectionInfo {
+            session_id: (!id.is_null()).then(|| id.to_string()),
+            security: self.security.clone(),
+            server_certificate: self.server_certificate.clone(),
+            user: self.user.clone(),
+        })
     }
 }
 
