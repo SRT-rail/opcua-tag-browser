@@ -398,7 +398,10 @@ pub(crate) fn own_certificate_for(pki_dir: &Path, application_uri: &str) {
         .map_or(0, |since| since.as_secs());
     let key = pki_dir.join("private").join("private.pem");
     for path in [cert, key] {
-        let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+        let Some(name) = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
             continue;
         };
         let aside = path.with_file_name(format!("{name}.before-{stamp}"));
@@ -646,11 +649,17 @@ mod tests {
 
         made("urn:srt:hmi:machine-fano-0012:panel-1");
         own_certificate_for(&pki, "urn:srt:hmi:machine-fano-0012:panel-1");
-        assert!(pki.join("own").join("cert.der").exists(), "a matching certificate stays");
+        assert!(
+            pki.join("own").join("cert.der").exists(),
+            "a matching certificate stays"
+        );
         assert!(pki.join("private").join("private.pem").exists());
 
         own_certificate_for(&pki, "urn:srt:hmi:machine-fano-0012:panel-2");
-        assert!(!pki.join("own").join("cert.der").exists(), "the old one is set aside");
+        assert!(
+            !pki.join("own").join("cert.der").exists(),
+            "the old one is set aside"
+        );
         assert!(!pki.join("private").join("private.pem").exists());
         let kept = |dir: &str| {
             std::fs::read_dir(pki.join(dir))

@@ -383,6 +383,17 @@ impl Collector {
                         backoff.reset();
                     }
 
+                    if e.server_full() {
+                        let delay = self.monitor_options.server_full_wait;
+                        log::warn!(
+                            "[{}] {e}: the server has no room for another session, asking again in {} s",
+                            self.name,
+                            delay.as_secs()
+                        );
+                        sleep_interruptible(delay, &self.stop);
+                        continue;
+                    }
+
                     let delay = backoff.next();
                     log::error!("[{}] {e}, restarting in {}ms", self.name, delay.as_millis());
                     sleep_interruptible(delay, &self.stop);

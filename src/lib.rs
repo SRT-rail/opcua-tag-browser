@@ -186,7 +186,7 @@ pub use connection::{
 };
 pub use error::{Error, Result};
 pub use filter::{AcceptAll, DefaultNodeFilter, NodeFilter};
-pub use scanner::{ScanOptions, ScanReport, TreeScanner};
+pub use scanner::{ScanOptions, ScanProgress, ScanReport, TreeScanner};
 pub use session::{catch_panic, panic_message, OpcUaSession, PlcSession};
 pub use tag::PlcTag;
 pub use tagset::TagSet;

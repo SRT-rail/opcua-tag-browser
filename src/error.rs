@@ -164,6 +164,15 @@ impl Error {
     pub fn is_recoverable(&self) -> bool {
         !matches!(self, Error::InsecureCredentials | Error::ClientBuild(_))
     }
+
+    /// Whether the server refused the session because it already serves as
+    /// many as it allows (`BadTooManySessions`).
+    ///
+    /// Asking again within seconds cannot help: a slot frees only when
+    /// another client leaves or the server times one out.
+    pub fn server_full(&self) -> bool {
+        matches!(self, Error::Connect { status, .. } if status.status() == StatusCode::BadTooManySessions)
+    }
 }
 
 /// Convenience alias for results returned by this crate.
@@ -189,5 +198,21 @@ mod tests {
         assert!(Error::InternalPanic("boom".to_string()).is_recoverable());
         assert!(Error::MissingSink.is_recoverable());
         assert!(Error::Silent("no data from the server for 5 s".to_string()).is_recoverable());
+    }
+
+    #[test]
+    fn a_full_server_is_told_apart_from_other_refusals() {
+        let refused = |status| Error::Connect {
+            endpoint: "opc.tcp://host:4840".to_string(),
+            status,
+        };
+        assert!(refused(StatusCode::BadTooManySessions).server_full());
+        assert!(!refused(StatusCode::BadNotConnected).server_full());
+        assert!(!refused(StatusCode::BadUserAccessDenied).server_full());
+        assert!(!Error::Browse {
+            node_id: "ns=3;s=x".to_string(),
+            status: StatusCode::BadTooManySessions,
+        }
+        .server_full());
     }
 }

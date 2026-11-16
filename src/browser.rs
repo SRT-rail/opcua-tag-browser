@@ -3,6 +3,7 @@
 use crate::error::{Error, Result};
 use crate::session::PlcSession;
 use opcua::client::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// A child node discovered while browsing.
@@ -59,6 +60,12 @@ impl BrowsedNode {
     }
 }
 
+/// Nodes asked for in one `Browse` request; halved while the server refuses that many.
+const BROWSE_BATCH: usize = 50;
+
+/// Requests in a row the server leaves unanswered before the rest are not asked for.
+const GIVE_UP_AFTER: usize = 8;
+
 /// Lists the children of a node.
 ///
 /// Implement this to drive [`TreeScanner`](crate::TreeScanner) against a fake
@@ -66,85 +73,170 @@ impl BrowsedNode {
 pub trait NodeBrowser {
     /// Returns every child of `node_id`, following continuation points.
     fn children_of(&self, node_id: &NodeId) -> Result<Vec<BrowsedNode>>;
+
+    /// Returns the children of each node, in the order given, following continuation points.
+    ///
+    /// The default asks for one node at a time with [`children_of`](Self::children_of);
+    /// a live browser asks for many nodes per request.
+    fn children_of_many(&self, node_ids: &[NodeId]) -> Vec<Result<Vec<BrowsedNode>>> {
+        node_ids
+            .iter()
+            .map(|node_id| self.children_of(node_id))
+            .collect()
+    }
 }
 
 /// A [`NodeBrowser`] backed by a live session.
 pub struct OpcUaNodeBrowser {
     session: Arc<dyn PlcSession>,
+    batch: AtomicUsize,
 }
 
 impl OpcUaNodeBrowser {
     /// Creates a browser over the given session.
     pub fn new(session: Arc<dyn PlcSession>) -> Self {
-        Self { session }
+        Self {
+            session,
+            batch: AtomicUsize::new(BROWSE_BATCH),
+        }
+    }
+
+    fn follow(&self, node_id: &NodeId, result: BrowseResult) -> Result<Vec<BrowsedNode>> {
+        if result.status_code.is_bad() {
+            return Err(browse_error(node_id, result.status_code));
+        }
+        let mut children = Vec::new();
+        append_references(&result.references, &mut children);
+
+        let mut point = result.continuation_point;
+        while has_more(&point) {
+            let next = match self.session.browse_next(false, &[point.clone()]) {
+                Ok(Some(next)) => next,
+                Ok(None) => break,
+                Err(status) => {
+                    let _ = self.session.browse_next(true, &[point]);
+                    return Err(browse_error(node_id, status));
+                }
+            };
+            let mut next_point = ByteString::null();
+            for next_result in next {
+                if next_result.status_code.is_bad() {
+                    return Err(browse_error(node_id, next_result.status_code));
+                }
+                append_references(&next_result.references, &mut children);
+                next_point = next_result.continuation_point;
+            }
+            point = next_point;
+        }
+        Ok(children)
     }
 }
 
 impl NodeBrowser for OpcUaNodeBrowser {
     fn children_of(&self, node_id: &NodeId) -> Result<Vec<BrowsedNode>> {
-        let description = BrowseDescription {
-            node_id: node_id.clone(),
-            browse_direction: BrowseDirection::Forward,
-            reference_type_id: ReferenceTypeId::HierarchicalReferences.into(),
-            include_subtypes: true,
-            node_class_mask: 0,
-            result_mask: BrowseResultMask::All as u32,
-        };
-
-        let mut children = Vec::new();
-
         let results = self
             .session
-            .browse(&[description])
-            .map_err(|status| Error::Browse {
-                node_id: node_id.to_string(),
-                status,
-            })?;
+            .browse(&[describe(node_id)])
+            .map_err(|status| browse_error(node_id, status))?;
 
-        let Some(results) = results else {
-            return Ok(children);
-        };
-
-        for result in results {
-            if result.status_code.is_bad() {
-                return Err(Error::Browse {
-                    node_id: node_id.to_string(),
-                    status: result.status_code,
-                });
-            }
-
-            append_references(&result.references, &mut children);
-
-            let mut continuation_point = result.continuation_point.clone();
-            while has_more(&continuation_point) {
-                let next = self
-                    .session
-                    .browse_next(false, &[continuation_point.clone()])
-                    .map_err(|status| Error::Browse {
-                        node_id: node_id.to_string(),
-                        status,
-                    })?;
-
-                let Some(next_results) = next else { break };
-
-                let mut next_point = ByteString::null();
-                for next_result in next_results {
-                    if next_result.status_code.is_bad() {
-                        return Err(Error::Browse {
-                            node_id: node_id.to_string(),
-                            status: next_result.status_code,
-                        });
-                    }
-                    append_references(&next_result.references, &mut children);
-                    next_point = next_result.continuation_point.clone();
-                }
-                continuation_point = next_point;
-            }
+        let mut children = Vec::new();
+        for result in results.unwrap_or_default() {
+            children.extend(self.follow(node_id, result)?);
         }
 
         log::trace!("{} has {} children", node_id, children.len());
         Ok(children)
     }
+
+    fn children_of_many(&self, node_ids: &[NodeId]) -> Vec<Result<Vec<BrowsedNode>>> {
+        let mut answers = Vec::with_capacity(node_ids.len());
+        let mut size = self.batch.load(Ordering::Relaxed).max(1);
+        let mut unanswered = 0;
+
+        while answers.len() < node_ids.len() {
+            let start = answers.len();
+            let batch = &node_ids[start..(start + size).min(node_ids.len())];
+            let descriptions: Vec<BrowseDescription> = batch.iter().map(describe).collect();
+
+            match self.session.browse(&descriptions) {
+                Ok(Some(results)) if results.len() == batch.len() => {
+                    unanswered = 0;
+                    for (node_id, result) in batch.iter().zip(results) {
+                        answers.push(self.follow(node_id, result));
+                    }
+                }
+                Ok(_) | Err(_) if size > 1 => {
+                    size = (size / 2).max(1);
+                    self.batch.store(size, Ordering::Relaxed);
+                    log::debug!(
+                        "the server refused {} nodes per browse, asking for {size}",
+                        batch.len()
+                    );
+                }
+                Ok(_) => {
+                    unanswered = 0;
+                    answers.push(self.children_of(&batch[0]));
+                }
+                Err(status) => {
+                    answers.push(Err(browse_error(&batch[0], status)));
+                    unanswered = if passing(status) { unanswered + 1 } else { 0 };
+                    if unanswered >= GIVE_UP_AFTER {
+                        let rest = &node_ids[answers.len()..];
+                        answers.extend(
+                            rest.iter()
+                                .map(|node_id| Err(browse_error(node_id, status))),
+                        );
+                    }
+                }
+            }
+        }
+
+        log::trace!("{} nodes browsed", node_ids.len());
+        answers
+    }
+}
+
+fn describe(node_id: &NodeId) -> BrowseDescription {
+    BrowseDescription {
+        node_id: node_id.clone(),
+        browse_direction: BrowseDirection::Forward,
+        reference_type_id: ReferenceTypeId::HierarchicalReferences.into(),
+        include_subtypes: true,
+        node_class_mask: 0,
+        result_mask: BrowseResultMask::All as u32,
+    }
+}
+
+fn browse_error(node_id: &NodeId, status: StatusCode) -> Error {
+    Error::Browse {
+        node_id: node_id.to_string(),
+        status,
+    }
+}
+
+/// Failures the server or the link may recover from; anything else is an answer.
+pub(crate) fn passing(status: StatusCode) -> bool {
+    let code = status.bits() & StatusCode::STATUS_MASK.bits();
+    [
+        StatusCode::BadTimeout,
+        StatusCode::BadRequestTimeout,
+        StatusCode::BadTooManyOperations,
+        StatusCode::BadResourceUnavailable,
+        StatusCode::BadTcpServerTooBusy,
+        StatusCode::BadNoContinuationPoints,
+        StatusCode::BadCommunicationError,
+        StatusCode::BadConnectionClosed,
+        StatusCode::BadSecureChannelClosed,
+        StatusCode::BadNotConnected,
+        StatusCode::BadSessionClosed,
+        StatusCode::BadSessionIdInvalid,
+        StatusCode::BadServerHalted,
+        StatusCode::BadOutOfMemory,
+        StatusCode::BadInternalError,
+        StatusCode::BadUnexpectedError,
+    ]
+    .iter()
+    .any(|known| known.bits() == code)
 }
 
 /// Returns true when a continuation point carries a non-empty value.

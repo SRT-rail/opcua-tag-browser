@@ -87,6 +87,11 @@ pub struct MonitorOptions {
     pub restart_backoff_min: Duration,
     /// Ceiling on `Collector`'s restart backoff.
     pub restart_backoff_max: Duration,
+    /// How long `Collector` waits before asking again when the server says
+    /// it already serves as many sessions as it allows
+    /// (`BadTooManySessions`). Asking every few seconds would only keep the
+    /// server busy refusing.
+    pub server_full_wait: Duration,
     /// How long a session may deliver nothing before it is replaced.
     ///
     /// The collector also watches the server's clock, so a healthy session
@@ -115,6 +120,7 @@ impl Default for MonitorOptions {
             deadband: None,
             restart_backoff_min: Duration::from_secs(1),
             restart_backoff_max: Duration::from_secs(30),
+            server_full_wait: Duration::from_secs(30),
             liveness_timeout: Duration::from_secs(5),
         }
     }
@@ -185,6 +191,13 @@ impl MonitorOptions {
     /// Sets the ceiling on `Collector`'s restart backoff.
     pub fn restart_backoff_max(mut self, d: Duration) -> Self {
         self.restart_backoff_max = d;
+        self
+    }
+
+    /// Sets how long `Collector` waits before asking again when the server
+    /// has no room for another session.
+    pub fn server_full_wait(mut self, d: Duration) -> Self {
+        self.server_full_wait = d;
         self
     }
 
