@@ -1,3 +1,28 @@
+## [0.3.4] - 2026-11-16
+
+### Added
+
+- `NodeBrowser::children_of_many`, with a default that asks one node at a time.
+  `OpcUaNodeBrowser` asks for up to 50 nodes per `Browse` request, halves that while the server
+  refuses it, and keeps the size it learned.
+- `ScanOptions::retries` and `retry_pause`.
+- `TreeScanner::on_progress` and `ScanProgress`: where a running scan is and how many distinct tags
+  it has found, for showing while it runs.
+
+### Changed
+
+- `TreeScanner` reads the tree one level at a time, many nodes per request, and browses a node
+  reached by more than one path once. The tags, their paths and their order are the same as
+  before. On a PLC with thousands of nodes a full scan takes seconds instead of minutes, and
+  far fewer requests reach the server.
+- A node whose browse fails for a reason the server may recover from (busy, timeout, a dropped
+  link) is asked again twice, 0.3 s and 0.9 s later, before its subtree is skipped. A refusal is
+  skipped at once, as before.
+- When the server stops answering during a scan, the scan fails instead of returning the part
+  read so far, so a collector never saves a half tree as its tag list; it connects again and
+  scans again.
+- A continuation point is released when following it fails.
+
 ## [0.3.3] - 2026-11-11
 
 ### Added
@@ -19,12 +44,6 @@
 - Errors that say why no session could be opened: `NoMatchingSecurity` (with what the server
   offers), `UserRequired`, `UserNotAccepted`. A password is still never sent in the clear: it goes
   over an encrypted channel or a user token policy that encrypts it.
-- `NodeBrowser::children_of_many`, with a default that asks one node at a time.
-  `OpcUaNodeBrowser` asks for up to 50 nodes per `Browse` request, halves that while the server
-  refuses it, and keeps the size it learned.
-- `ScanOptions::retries` and `retry_pause`.
-- `TreeScanner::on_progress` and `ScanProgress`: where a running scan is and how many distinct tags
-  it has found, for showing while it runs.
 - `Error::server_full` and `MonitorOptions::server_full_wait` (30 s by default).
 
 ### Changed
@@ -32,18 +51,6 @@
 - When the server answers `BadTooManySessions`, `Collector` asks again after
   `server_full_wait` instead of within seconds, so several clients waiting for a slot do not keep
   the server busy refusing them.
-
-- `TreeScanner` reads the tree one level at a time, many nodes per request, and browses a node
-  reached by more than one path once. The tags, their paths and their order are the same as
-  before. On a PLC with thousands of nodes a full scan takes seconds instead of minutes, and
-  far fewer requests reach the server.
-- A node whose browse fails for a reason the server may recover from (busy, timeout, a dropped
-  link) is asked again twice, 0.3 s and 0.9 s later, before its subtree is skipped. A refusal is
-  skipped at once, as before.
-- When the server stops answering during a scan, the scan fails instead of returning the part
-  read so far, so a collector never saves a half tree as its tag list; it connects again and
-  scans again.
-- A continuation point is released when following it fails.
 
 ### Fixed
 
